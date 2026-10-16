@@ -874,7 +874,7 @@ for (const b of bubbles) {
 // Pan and zoom. A map you cannot move into is a diagram, and the tail of small
 // clusters is only legible once you can lean in.
 const svg = document.getElementById('map');
-const box = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+const box = svg.getAttribute('viewBox').trim().split(/[ ,]+/).map(Number);
 const home = { x: box[0], y: box[1], w: box[2], h: box[3] };
 let zoom = 1;
 let offset = { x: 0, y: 0 };
