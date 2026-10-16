@@ -26,7 +26,7 @@ from .check import (
     write_page,
 )
 from .config import Settings, load_env_file
-from .enrich import DeezerEnricher
+from .enrich import DeezerEnricher, DeezerError
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .graph import derive, load, query, store
@@ -457,7 +457,13 @@ def enrich(
         False, "--external-only", help="Limit the pass to artists from expansion."
     ),
     workers: int = typer.Option(
-        10, "--workers", help="Parallel requests. Deezer measured 300 in 3.7 seconds."
+        10, "--workers", help="Parallel requests. Paced by --rate, not by the pool size."
+    ),
+    rate: float = typer.Option(
+        8.0,
+        "--rate",
+        help="Requests per second across every worker. Deezer refuses above its own "
+        "limit with HTTP 200 and an error body.",
     ),
     keep_going: bool = typer.Option(
         False, "--keep-going", help="Repeat until every artist has been asked about."
@@ -474,14 +480,21 @@ def enrich(
         8000, "--limit", help="Artists to ask about; the next run continues where this stops."
     ),
 ) -> None:
-    """Fetch genres and labels for artists, concurrently."""
+    """Fetch genres and labels for artists, paced below Deezer's request limit."""
     settings = _settings([])
     if refresh:
         with store.connect(settings) as driver:
             store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
     _enrich_artists_with_deezer(
-        settings, limit, external_only, keep_going, min_agreement, workers
+        settings, limit, external_only, keep_going, min_agreement, workers, rate
     )
+
+
+def _ask(enricher: DeezerEnricher, name: str):
+    try:
+        return ("ok", enricher.facts(name))
+    except DeezerError as error:
+        return ("failed", str(error))
 
 
 def _enrich_artists_with_deezer(
@@ -491,15 +504,16 @@ def _enrich_artists_with_deezer(
     keep_going: bool = False,
     min_agreement: int = 2,
     workers: int = 8,
+    rate: float = 8.0,
 ) -> None:
     """Fill in genres and labels for artists nobody has asked about yet.
 
-    Concurrent because Deezer allows it, where Discogs allows one request a
-    second and made the whole graph an hour of waiting.
+    Three outcomes are held apart. A refusal is not a miss: an artist Deezer
+    would not answer for stays unasked, so the next run asks again instead of
+    recording that the artist has no genres.
     """
-    enricher = DeezerEnricher()
-    asked = 0
-    answered = 0
+    enricher = DeezerEnricher(rate=rate)
+    asked = matched = missed = refused = 0
     while True:
         with store.connect(settings) as driver:
             pending = query.artists_needing_genres(
@@ -508,17 +522,21 @@ def _enrich_artists_with_deezer(
         if not pending:
             break
 
-        typer.echo(f"asking Deezer about {len(pending)} artists, {workers} at a time")
+        typer.echo(f"asking Deezer about {len(pending)} artists at {rate:g}/s")
         rows: list[dict] = []
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-            results = pool.map(lambda entry: enricher.facts(entry["name"]), pending)
-            for artist, facts in zip(pending, results):
+            results = pool.map(lambda entry: _ask(enricher, entry["name"]), pending)
+            for artist, (kind, value) in zip(pending, results):
                 asked += 1
+                if kind == "failed":
+                    refused += 1
+                    continue
+                facts = value
                 if facts is None:
-                    # Record the miss so the next pass does not ask again.
+                    missed += 1
                     rows.append({"key": artist["key"], "styles": [], "labels": []})
                 else:
-                    answered += 1
+                    matched += 1
                     rows.append(
                         {
                             "key": artist["key"],
@@ -530,14 +548,27 @@ def _enrich_artists_with_deezer(
                     with store.connect(settings) as driver:
                         load.write_artist_genres(driver, settings.neo4j_database, rows)
                     rows = []
-                    typer.echo(f"  asked {asked}, answered {answered}", err=True)
+                    typer.echo(
+                        f"  asked {asked}, genres {matched}, no match {missed}, "
+                        f"refused {refused}",
+                        err=True,
+                    )
         if rows:
             with store.connect(settings) as driver:
                 load.write_artist_genres(driver, settings.neo4j_database, rows)
+        if refused:
+            typer.echo(
+                f"Deezer refused {refused} of {asked} requests. Those artists stay "
+                f"unasked and the next run retries them; lower --rate if this repeats.",
+                err=True,
+            )
         if not keep_going:
             break
 
-    typer.echo(f"Deezer asked about {asked}, answered for {answered}")
+    typer.echo(
+        f"Deezer: asked {asked}, genres found {matched}, no match {missed}, "
+        f"refused {refused}"
+    )
 
 
 @app.command()

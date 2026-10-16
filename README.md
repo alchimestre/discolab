@@ -238,7 +238,7 @@ Deezer supplies genres and label names, written as properties rather than as gra
 | `Artist.labels` | the label on those albums |
 | `Artist.enriched` | whether the artist has been asked about |
 
-It resumes: every artist asked about is marked, so the next run continues where the last stopped. It is concurrent because Deezer allows it — measured 300 requests in 3.7 seconds with no rejection, where Discogs allows one a second and would need a hundred minutes for the same graph.
+It resumes: every artist asked about is marked, so the next run continues where the last stopped. Requests are paced at eight a second across every worker, because Deezer serves fifty requests per five-second window and refuses the rest with HTTP 200 and an error body. That body reads as "no genres" unless it is checked, which is how a rate limit gets written into the graph as a fact. A refusal now stays unasked, and the next run retries it.
 
 **The route matters more than the query.** `search/album` matches album *titles*, so it returns compilations and soundtracks that merely share a name: Rome resolved to a video-game score and Quelza to a Brazilian record. The correct route is `search/artist`, then that artist's own albums, then each album for its genres and label. That returns `Warp Records` for Squarepusher, `Dekmantel` for Polygonia and `MORD` for Quelza.
 
