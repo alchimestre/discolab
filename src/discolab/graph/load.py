@@ -48,28 +48,13 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
-def write_label_mates(driver: Driver, database: str, rows: list[dict]) -> int:
-    """Attach artists found on a label, marking only genuinely new ones external."""
-    if not rows:
-        return 0
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            """
-            UNWIND $rows AS row
-            MATCH (l:Label {key: row.label_key})
-            MERGE (a:Artist {key: row.key})
-            SET a.name = coalesce(a.name, row.name),
-                a.external = coalesce(a.external, row.external)
-            MERGE (l)-[:HAS_ARTIST]->(a)
-            """,
-            rows=chunk,
-            database_=database,
-        )
-    return len(rows)
-
-
 def write_artist_sources(driver: Driver, database: str, rows: list[dict]) -> int:
-    """Attach Discogs styles and labels, and note that the artist was asked about."""
+    """Attach Discogs styles and label names, and note that the artist was asked about.
+
+    Labels are a property rather than nodes. Affinity through them measured at
+    zero: 1,770 labels across 406 artists, not one holding two of them, so a
+    label graph expressed nothing and only cost a traversal.
+    """
     if not rows:
         return 0
     for chunk in _chunks(rows, BATCH_SIZE):
@@ -80,10 +65,6 @@ def write_artist_sources(driver: Driver, database: str, rows: list[dict]) -> int
             SET a.discogs_styles = row.styles,
                 a.discogs_labels = row.labels,
                 a.discogs_checked = true
-            WITH a, row
-            UNWIND row.labels AS label_name
-            MERGE (l:Label {key: label_name})
-            MERGE (a)-[:ON_LABEL]->(l)
             """,
             rows=chunk,
             database_=database,

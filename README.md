@@ -211,6 +211,28 @@ The join is on the file path, and it must be normalised to NFC first: the filesy
 
 The tags are a curated taxonomy spanning style and region, so they filter far more sharply than Last.fm's. `Raw / Deep / Hypnotic`, `Peak Time / Driving`, `Minimal / Deep Tech`, `Hard Techno`, `Progressive Psy-Trance`, `Maghreb & Mashriq`, `Tuareg Desert Blues`, `Occitan & French Folk`. With BPM and key alongside them, a mix-oriented query is a filter rather than a guess.
 
+### Discogs
+
+```
+uv run discolab enrich --discogs --limit 1200
+```
+
+Discogs supplies styles and label names, one request per artist, and writes them as properties rather than as graph nodes.
+
+| Written | From |
+|---|---|
+| `Artist.discogs_styles` | the styles of the artist's releases |
+| `Artist.discogs_labels` | the label recurring across their releases |
+| `Artist.discogs_checked` | whether the artist has been asked about |
+
+It resumes: every artist asked about is marked, so the next run continues where the last stopped. Covering the whole graph is forty-eight minutes at Discogs' sixty requests a minute, so it runs in the background and the page build never waits on it. Enrichment is ordered by how many seeds agree on an artist, because only about 360 expansion artists carry two or more seeds and can reach a page at all.
+
+A single search is one request per artist because asking for their releases returns the styles, genres and labels together, rather than a call per release.
+
+**Labels are a property, not a graph.** Affinity through labels measured at zero: 1,770 distinct labels across 406 artists, not one holding two of the same collection's artists. A collection of one release per small label cannot express signing affinity, so a label expansion wrote 858 edges that surfaced Cliff Richard and Marillion, and the whole route was removed. The label name stays as one string on the page because it is the only curated human context there: `Ostgut Ton` says what Shed sounds like faster than any score.
+
+A search result's label field also carries pressing plants, rights societies and the occasional edition title, so `clean_labels` drops them. Printing "Sterling Sound" where a label belongs is worse than printing nothing.
+
 ## Known limits
 
 - Edges come only from title credits and shared containers. A library of single-artist albums produces almost none.

@@ -222,18 +222,18 @@ EDITION_PATTERN = re.compile(
 MAX_LABEL_LENGTH = 42
 
 # Discogs records pressing plants, rights societies and a placeholder in the
-# same field as real labels. Without this the richest "labels" in a collection
-# are Optimal Media and GZ Media, which curate nothing.
+# same field as real labels. Without this the labels printed beside a
+# candidate are Optimal Media and GZ Media, which curate nothing.
 NOT_A_LABEL = frozenset(
     {
-        "not on label", "not on label (self-released)", "unknown", "none",
+        "not on label", "unknown", "none",
         "optimal media gmbh", "optimal media production", "optimal media solutions",
         "mpo", "gz media", "gz digital media", "sonopress", "sony dadc",
         "record industry", "dubplates & mastering", "copyright control",
         "arvato", "cinram", "disctronics", "docdata", "kdisc", "nimbus",
         "deluxe global media", "universal m&l", "edc", "ims", "pdo", "pmdc",
-        "speciality records", "www.gzmedia.com", "handwerkskammer",
-        "sabam", "gema", "sacem", "buma/stemra", "biem", "ascap", "bmi",
+        "speciality records", "www gzmedia com", "handwerkskammer",
+        "sabam", "gema", "sacem", "buma stemra", "biem", "ascap", "bmi",
         "prs", "mcps", "stemra", "spa", "siae", "teosto", "ncb", "kobalt",
         "no label", "white label", "test pressing",
     }
@@ -245,18 +245,14 @@ def _label_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
 
 
-def is_real_label(name: str) -> bool:
-    """False for a pressing plant, a rights society or a placeholder."""
-    text = name.strip().casefold()
-    if not text or text in NOT_A_LABEL:
-        return False
-    if text.startswith("not on label") or text.startswith("©") or text.startswith("℗"):
-        return False
-    return len(text) <= MAX_LABEL_LENGTH
-
-
 def clean_labels(labels: Sequence[str]) -> tuple[str, ...]:
-    """Drop studios, pressing plants and edition strings, keeping real labels."""
+    """Keep real label names, for display.
+
+    A search result's label field carries studios, pressing plants, rights
+    societies and the occasional edition title alongside real labels, and
+    printing "Sterling Sound" where a label belongs is worse than printing
+    nothing.
+    """
     kept = []
     for label in labels:
         text = label.strip()
@@ -264,95 +260,10 @@ def clean_labels(labels: Sequence[str]) -> tuple[str, ...]:
             continue
         if STUDIO_PATTERN.search(text) or EDITION_PATTERN.search(text):
             continue
+        if _label_key(text) in NOT_A_LABEL or _label_key(text).startswith("not on label"):
+            continue
         kept.append(text)
     return tuple(sorted(set(kept)))
-
-
-class DiscogsLabelExpander:
-    """Find other artists on the labels already in the collection.
-
-    This is the digger's method rather than a similarity list: a label is a
-    deliberate curation, so the rest of its roster is a structural neighbour
-    rather than a guess about who else gets listened to.
-    """
-
-    def __init__(self, token: str, agent: str = DISCOGS_AGENT, per_label: int = 50):
-        self.token = token
-        self.agent = agent
-        self.per_label = per_label
-
-    def unavailable_reason(self) -> str | None:
-        return None if self.token else "set DISCOGS_TOKEN in .env"
-
-    def is_label_entity(self, name: str) -> bool:
-        """Ask Discogs whether this is a label rather than a plant or a studio.
-
-        Pattern matching catches Optimal Media and GZ Media but not The
-        Exchange or Sterling Sound. A search restricted to labels answers it
-        definitively in one request.
-        """
-        query = urllib.parse.urlencode(
-            {"q": name, "type": "label", "per_page": 3}
-        )
-        request = urllib.request.Request(
-            f"{DISCOGS_ROOT}/database/search?{query}",
-            headers={
-                "User-Agent": self.agent,
-                "Authorization": f"Discogs token={self.token}",
-            },
-        )
-        time.sleep(DISCOGS_INTERVAL)
-        try:
-            with urllib.request.urlopen(request, timeout=25) as response:
-                payload = json.loads(response.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as error:
-            if error.code == 429:
-                time.sleep(5)
-            return False
-        except Exception:
-            return False
-
-        wanted = _label_key(name)
-        for item in payload.get("results") or []:
-            if _label_key(str(item.get("title") or "")) == wanted:
-                return True
-        return False
-
-    def artists_on(self, label: str) -> list[tuple[str, str]]:
-        """(artist, release title) pairs from a label's releases."""
-        query = urllib.parse.urlencode(
-            {"label": label, "type": "release", "per_page": self.per_label}
-        )
-        request = urllib.request.Request(
-            f"{DISCOGS_ROOT}/database/search?{query}",
-            headers={
-                "User-Agent": self.agent,
-                "Authorization": f"Discogs token={self.token}",
-            },
-        )
-        time.sleep(DISCOGS_INTERVAL)
-        try:
-            with urllib.request.urlopen(request, timeout=25) as response:
-                payload = json.loads(response.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as error:
-            if error.code == 429:
-                time.sleep(5)
-            return []
-        except Exception:
-            return []
-
-        found: list[tuple[str, str]] = []
-        for item in payload.get("results") or []:
-            title = str(item.get("title") or "")
-            # Discogs search titles read "Artist - Release".
-            for separator in (" - ", " – ", " — "):
-                if separator in title:
-                    artist, _, release = title.partition(separator)
-                    artist = artist.strip()
-                    if artist and artist.casefold() not in {"various", "va"}:
-                        found.append((artist, release.strip()))
-                    break
-        return found
 
 
 def join_key(path: str) -> str:
