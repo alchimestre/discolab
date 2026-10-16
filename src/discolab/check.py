@@ -405,13 +405,16 @@ def build_page(
   const blocked = document.getElementById('blocked');
   let dead = 0;
 
+  function sectionName(section) {{
+    const heading = section.querySelector('h2').textContent.trim();
+    return heading.replace(/^\\d+\\.\\s*/, '').split(' island')[0].trim();
+  }}
+
   function save() {{
     const data = {{}};
     document.querySelectorAll('section').forEach(function (s) {{
-      const heading = s.querySelector('h2').textContent.trim();
-      const name = heading.replace(/^\\d+\\.\\s*/, '').split(' island')[0].trim();
       const tag = s.querySelector('.tag');
-      data[name] = {{
+      data[sectionName(s)] = {{
         kept: s.querySelector('input.keep').checked,
         state: tag ? tag.textContent : '',
       }};
@@ -421,6 +424,18 @@ def build_page(
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify(data),
     }}).catch(function () {{}});
+  }}
+
+  // Ticks live on the server, so a reload or a rebuild brings them back.
+  function restore() {{
+    fetch('/votes').then(function (r) {{ return r.ok ? r.json() : {{}}; }})
+      .then(function (data) {{
+        document.querySelectorAll('section').forEach(function (s) {{
+          const saved = data[sectionName(s)];
+          if (saved) s.querySelector('input.keep').checked = !!saved.kept;
+        }});
+        render();
+      }}).catch(function () {{}});
   }}
 
   function render() {{
@@ -440,6 +455,7 @@ def build_page(
   boxes.forEach(b => b.addEventListener('change', update));
   // Render only, so loading the page does not overwrite saved ticks with blanks.
   render();
+  restore();
 
   function markDead(section) {{
     const player = section.querySelector('.player');
@@ -608,6 +624,18 @@ def write_page(content: str, path: Path) -> Path:
 class _VoteHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
+
+    def do_GET(self) -> None:
+        votes_path = getattr(self.server, "votes_path", None)
+        if self.path.rstrip("/") == "/votes" and votes_path is not None:
+            body = json.dumps(read_votes(votes_path), ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
     def do_POST(self) -> None:
         votes_path = getattr(self.server, "votes_path", None)
