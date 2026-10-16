@@ -80,19 +80,22 @@ FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
                     "dubstep", "electro", "club", "edm", "dub")),
     ("Rock", ("rock", "metal", "alternative", "indie", "indé", "punk")),
     ("Folk & World", ("folk", "country", "singer", "latino", "africaine", "arabe",
-                      "indienne", "brésilienne", "bollywood", "reggae", "world")),
+                      "indienne", "brésilienne", "bollywood", "reggae", "world",
+                      "maghreb", "mashriq", "anatolia", "levant", "occitan",
+                      "sub-saharan", "sahel", "andes", "balkans", "cajun",
+                      "lament", "lullaby", "balearic", "tuareg")),
 )
 
 FAMILY_COLOUR = {
-    "Electronic": "#4d8df6",
-    "Hip hop & Soul": "#f2872f",
-    "Rock": "#e2574c",
-    "Pop": "#dd5fae",
-    "Jazz & Blues": "#d4a11c",
-    "Classical": "#9b7bd4",
-    "Folk & World": "#35a56a",
-    "Soundtrack": "#33a3bb",
-    "Other": "#8a8f98",
+    "Electronic": "#5b9bff",
+    "Hip hop & Soul": "#ff9440",
+    "Rock": "#ff6b5e",
+    "Pop": "#ff6fc4",
+    "Jazz & Blues": "#f0b429",
+    "Classical": "#b18cff",
+    "Folk & World": "#3fc47c",
+    "Soundtrack": "#3fc0d8",
+    "Other": "#9aa0aa",
 }
 
 
@@ -121,7 +124,9 @@ class Cluster:
     r: float = 0.0
     tag: str = ""
     name: str = ""
+    named_from: str = ""
     candidates: list[str] = field(default_factory=list)
+    options: list[tuple[str, str]] = field(default_factory=list)
     suggestions: list[dict] = field(default_factory=list)
 
     @property
@@ -140,7 +145,15 @@ class Cluster:
 
     @property
     def colour(self) -> str:
-        return FAMILY_COLOUR.get(self.family, FAMILY_COLOUR["Other"])
+        """Tint from the genre the cluster is named for, not its heaviest one.
+
+        Colouring by the heaviest genre while naming by the most distinctive one
+        painted Rap/Hip Hop blue, because Electro was its largest single genre.
+        The bubble then disagreed with its own label.
+        """
+        return FAMILY_COLOUR.get(
+            family_of(self.named_from or self.family), FAMILY_COLOUR["Other"]
+        )
 
     @property
     def label(self) -> str:
@@ -294,24 +307,31 @@ def assign_names(clusters: list[Cluster]) -> None:
             # keeps it distinguishing.
             scored.append((share * (share / (counts[name] / overall)), name))
         scored.sort(key=lambda item: (-item[0], item[1]))
-        names = [name for _, name in scored]
-        if len(names) > 1:
-            names.insert(1, f"{names[0]} & {names[1]}")
-        names += [name for name, _ in cluster.pool if name not in names]
-        names += [cluster.family]
-        cluster.candidates = names
+        singles = [name for _, name in scored]
+        # Each candidate keeps the genre it was drawn from, so the bubble can be
+        # tinted for the name it ended up with.
+        pairs: list[tuple[str, str]] = []
+        if len(singles) > 1:
+            pairs.append((f"{singles[0]} & {singles[1]}", singles[0]))
+        options: list[tuple[str, str]] = [(name, name) for name in singles]
+        options[1:1] = pairs
+        options += [(name, name) for name, _ in cluster.pool if name not in singles]
+        options.append((cluster.family, cluster.family))
+        cluster.options = options
 
     taken: set[str] = set()
     # Largest first, so the biggest clusters get the best of contested names.
     for cluster in sorted(clusters, key=lambda c: (-c.size, c.key)):
         chosen = ""
-        for candidate in cluster.candidates:
+        source = ""
+        for candidate, from_genre in cluster.options:
             if candidate and candidate not in taken:
-                chosen = candidate
+                chosen, source = candidate, from_genre
                 break
         if not chosen:
-            chosen = f"cluster {cluster.key}"
+            chosen, source = f"cluster {cluster.key}", ""
         cluster.name = chosen
+        cluster.named_from = source
         taken.add(chosen)
 
 
@@ -371,7 +391,7 @@ def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> 
             f'aria-label="{html.escape(title)}">'
             f"<title>{html.escape(title)}</title>"
             f'<circle cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" r="{cluster.r:.1f}" '
-            f'fill="{cluster.colour}" fill-opacity="0.18" stroke="{cluster.colour}"/>'
+            f'fill="{cluster.colour}" fill-opacity="0.30" stroke="{cluster.colour}"/>'
             f"{text}</g>"
         )
 
@@ -402,6 +422,7 @@ def _payload(clusters: list[Cluster]) -> str:
                     "corpus": cluster.corpus,
                     "tagged": cluster.tagged,
                     "label": cluster.label,
+                    "named_from": cluster.named_from,
                     "family": cluster.family,
                     "colour": cluster.colour,
                     "sub_genre": cluster.sub_genre,
@@ -440,12 +461,13 @@ PAGE = """<!doctype html>
   #graph { flex: 1; min-height: 0; padding: 8px; }
   svg#map { width: 100%; height: 100%; display: block; }
   .edge { stroke: currentColor; color: var(--ink); }
-  .bubble circle { stroke-width: 1.2; cursor: pointer; transition: fill-opacity .12s; }
-  .bubble text { fill: var(--ink); pointer-events: none; opacity: .9; }
-  .bubble:hover circle, .bubble:focus-visible circle { stroke-width: 2.6; fill-opacity: .38; }
+  .bubble circle { stroke-width: 1.6; cursor: pointer; transition: fill-opacity .12s; }
+  .bubble text { fill: var(--ink); pointer-events: none; opacity: .95;
+                 paint-order: stroke; stroke: Canvas; stroke-width: 2.5px; }
+  .bubble:hover circle, .bubble:focus-visible circle { stroke-width: 3; fill-opacity: .58; }
   .bubble:hover text, .bubble:focus-visible text { opacity: 1; }
-  .bubble.active circle { stroke-width: 3.2; fill-opacity: .52; }
-  .bubble.dimmed { opacity: .2; }
+  .bubble.active circle { stroke-width: 3.6; fill-opacity: .72; }
+  .bubble.dimmed { opacity: .45; }
   .bubble:focus { outline: none; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
@@ -658,11 +680,55 @@ for (const b of bubbles) {
   b.addEventListener('focus', () => b.dispatchEvent(new Event('mouseenter')));
   b.addEventListener('mouseleave', () => { tip.textContent = ''; });
   b.addEventListener('click', () => {
+    if (moved > 4) return;   // that was a pan, not a pick
     if (picked.has(key)) picked.delete(key); else picked.add(key);
     emphasise();
     renderPanel();
   });
 }
+
+// Pan and zoom. A map you cannot move into is a diagram, and the tail of small
+// clusters is only legible once you can lean in.
+const svg = document.getElementById('map');
+const box = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+const home = { x: box[0], y: box[1], w: box[2], h: box[3] };
+let zoom = 1;
+let offset = { x: 0, y: 0 };
+let moved = 0;
+let drag = null;
+
+function applyView() {
+  svg.setAttribute('viewBox',
+    (home.x - offset.x) + ' ' + (home.y - offset.y) + ' ' +
+    (home.w / zoom) + ' ' + (home.h / zoom));
+}
+
+svg.addEventListener('wheel', event => {
+  event.preventDefault();
+  const factor = Math.exp(-event.deltaY * 0.0016);
+  zoom = Math.min(20, Math.max(0.5, zoom * factor));
+  applyView();
+}, { passive: false });
+
+svg.addEventListener('pointerdown', event => {
+  drag = { x: event.clientX, y: event.clientY };
+  moved = 0;
+  svg.setPointerCapture(event.pointerId);
+});
+svg.addEventListener('pointermove', event => {
+  if (!drag) return;
+  const unit = (home.w / zoom) / Math.max(1, svg.clientWidth);
+  offset.x -= (event.clientX - drag.x) * unit;
+  offset.y -= (event.clientY - drag.y) * unit;
+  moved += Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y);
+  drag = { x: event.clientX, y: event.clientY };
+  applyView();
+});
+svg.addEventListener('pointerup', () => { drag = null; });
+svg.addEventListener('pointercancel', () => { drag = null; });
+svg.addEventListener('dblclick', () => {
+  zoom = 1; offset = { x: 0, y: 0 }; applyView();
+});
 
 emphasise();
 renderPanel();

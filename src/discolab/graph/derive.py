@@ -81,9 +81,13 @@ def assign_communities(
 
     records = driver.execute_query(
         """
-        MATCH (a:Artist)-[r:CO_OCCURS|COLLABORATES]-(b:Artist)
+        MATCH (a:Artist)-[r:SIMILAR_TO|COLLABORATES]-(b:Artist)
         WHERE a.key < b.key
-        RETURN a.key AS source, b.key AS target, coalesce(r.weight, 1) AS weight
+        WITH a.key AS source, b.key AS target,
+             sum(CASE WHEN type(r) = 'COLLABORATES'
+                      THEN coalesce(r.credits, 1) * 2.0
+                      ELSE coalesce(r.score, 1) END) AS weight
+        RETURN source, target, weight
         """,
         database_=database,
     ).records
@@ -109,7 +113,11 @@ def assign_communities(
         for key in members:
             component_of[key] = (index, len(members))
 
-    betweenness = nx.betweenness_centrality(graph, normalized=True)
+    # Sampled: exact betweenness is O(nm), which on fifteen thousand artists and
+    # sixty thousand edges is hours. Five hundred sources is plenty to rank them.
+    betweenness = nx.betweenness_centrality(
+        graph, k=min(500, graph.number_of_nodes()), normalized=True, seed=RANDOM_SEED
+    )
 
     rows = [
         {

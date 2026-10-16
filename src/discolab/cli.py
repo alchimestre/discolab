@@ -971,6 +971,12 @@ def map_page(
         help="Suggestions to carry per cluster. The panel combines and ranks them, "
         "so a thin list per cluster caps what a selection can surface.",
     ),
+    min_size: int = typer.Option(
+        5,
+        "--min-size",
+        help="Hide clusters smaller than this. The similarity graph has a long "
+        "tail of one- and two-artist groups with no genre to name them by.",
+    ),
     serve: bool = typer.Option(
         True, "--serve/--no-serve", help="Serve the page."
     ),
@@ -1091,6 +1097,8 @@ def map_page(
         for row in sizes
     ]
     clusters.sort(key=lambda cluster: (-cluster.size, cluster.key))
+    hidden = sum(1 for cluster in clusters if cluster.size < min_size)
+    clusters = [cluster for cluster in clusters if cluster.size >= min_size]
     assign_names(clusters)
     biggest = max((cluster.size for cluster in clusters), default=1)
     for cluster in clusters:
@@ -1107,6 +1115,7 @@ def map_page(
         f"wrote {out} · {len(clusters)} clusters · "
         f"{covered} of them have a genre recorded · "
         f"{sum(len(c.suggestions) for c in clusters)} suggestions"
+        + (f" · {hidden} groups under {min_size} artists hidden" if hidden else "")
     )
 
     if serve:

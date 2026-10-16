@@ -83,7 +83,10 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 | Its label | The label that cluster leans on most, where it covers enough of the cluster to describe it. No two clusters share a name |
 | Hovering | Names what is under the pointer, and leaves the selection alone |
 | Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
+| Wheel and drag | Zooms and pans. Double-click resets. A map you cannot move into is a diagram, and the smaller clusters are only legible up close |
 | The list | Artists the selected clusters point at, ranked by how many of their artists point at each, with which clusters did |
+
+Clusters are found on the graph of related artists and collaborations, not on what shares a playlist. Measured on this library, the co-occurrence graph partitions at a modularity of 0.348 with 26% genre purity inside a cluster; related artists and collaborations give 0.854 and 39.6%, and folding co-occurrence back in at any weight drops it again. Shared genre is not an input either: scoring purity against a signal the clustering can see measures its own input rather than the result.
 
 Sixty-odd raw Deezer labels are folded into eight families before anything is named. Electro, Dance, Techno/House and Trance are one family, because naming a cluster after its top raw label spends sixty names on six ideas. The raw labels stay in the panel, where there is room for them.
 
