@@ -784,17 +784,30 @@ svg.addEventListener('wheel', event => {
 }, { passive: false });
 
 svg.addEventListener('pointerdown', event => {
-  drag = { x: event.clientX, y: event.clientY };
+  drag = { x: event.clientX, y: event.clientY, id: event.pointerId, panning: false };
   moved = 0;
-  svg.setPointerCapture(event.pointerId);
 });
 svg.addEventListener('pointermove', event => {
-  if (!drag) return;
+  if (!drag || event.pointerId !== drag.id) return;
+  const stepX = event.clientX - drag.x;
+  const stepY = event.clientY - drag.y;
+  moved += Math.abs(stepX) + Math.abs(stepY);
+  // Capture only once this is a drag. Capturing on pointerdown redirects the
+  // click away from the bubble, so no bubble ever received one and nothing could
+  // be selected.
+  if (!drag.panning) {
+    if (moved <= 4) return;
+    drag.panning = true;
+    // Capture can throw if the pointer is already gone, and a failed capture
+    // must not abort the pan.
+    try { svg.setPointerCapture(event.pointerId); } catch (error) { /* keep panning */ }
+  }
   const unit = (home.w / zoom) / Math.max(1, svg.clientWidth);
-  offset.x -= (event.clientX - drag.x) * unit;
-  offset.y -= (event.clientY - drag.y) * unit;
-  moved += Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y);
-  drag = { x: event.clientX, y: event.clientY };
+  // Adding, not subtracting: the view follows the hand. Subtracting moved the
+  // map the opposite way from the pointer.
+  offset.x += stepX * unit;
+  offset.y += stepY * unit;
+  drag = { x: event.clientX, y: event.clientY, id: drag.id, panning: true };
   applyView();
 });
 svg.addEventListener('pointerup', () => { drag = null; });
