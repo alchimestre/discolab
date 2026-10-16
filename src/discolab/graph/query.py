@@ -89,13 +89,22 @@ def corpus_keys(driver: Driver, database: str) -> list[str]:
 
 
 def seed_artists(
-    driver: Driver, database: str, per_community: int = 3, min_degree: int = 2
+    driver: Driver,
+    database: str,
+    per_community: int = 3,
+    min_degree: int = 2,
+    isolated_limit: int = 0,
 ) -> list[dict]:
     """The most central members of each taste cluster, to expand from.
 
     Taking the top bridges alone concentrates the seeds in whichever island is
     largest. One artist per cluster keeps them spread across the taste, which
     is what makes two unrelated areas agreeing on a name mean something.
+
+    An artist with no edges has no cluster and can never be reached by another
+    seed, so expanding from them is the only way the metal record buried in the
+    filesystem joins the rest of the metal. `isolated_limit` admits that many
+    of them, best represented first.
     """
     records = driver.execute_query(
         """
@@ -106,11 +115,41 @@ def seed_artists(
         ORDER BY a.degree DESC, a.name
         WITH community, collect(a)[0..$per_community] AS members
         UNWIND members AS m
-        RETURN m.key AS key, m.name AS name, m.community AS community, m.degree AS degree
+        RETURN m.key AS key, m.name AS name, m.community AS community,
+               m.degree AS degree, false AS isolated
         ORDER BY community, degree DESC
         """,
         per_community=per_community,
         min_degree=min_degree,
+        database_=database,
+    ).records
+    seeds = [dict(record) for record in records]
+
+    if isolated_limit > 0:
+        lonely = driver.execute_query(
+            """
+            MATCH (a:Artist)
+            WHERE coalesce(a.external, false) = false AND coalesce(a.degree, 0) = 0
+            MATCH (t:Track)-[:BY]->(a)
+            WITH a, count(t) AS tracks,
+                 sum(CASE WHEN size(coalesce(t.paths, [])) > 0 THEN 1 ELSE 0 END) AS owned,
+                 sum(coalesce(t.plays, 0)) AS plays
+            WHERE owned > 0 OR plays > 0
+            RETURN a.key AS key, a.name AS name, -1 AS community,
+                   0 AS degree, true AS isolated
+            ORDER BY tracks DESC, plays DESC
+            LIMIT $isolated_limit
+            """,
+            isolated_limit=isolated_limit,
+            database_=database,
+        ).records
+        seeds.extend(dict(record) for record in lonely)
+    return seeds
+
+
+def track_paths(driver: Driver, database: str) -> list[dict]:
+    records = driver.execute_query(
+        "MATCH (t:Track) UNWIND t.paths AS p RETURN t.key AS key, p AS path",
         database_=database,
     ).records
     return [dict(record) for record in records]

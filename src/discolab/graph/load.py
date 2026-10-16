@@ -48,6 +48,39 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
+def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Attach curated facts and their tags to tracks, then roll tags up to artists."""
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (t:Track {key: row.key})
+            SET t.bpm = row.bpm, t.musical_key = row.musical_key,
+                t.rating = row.rating, t.dj_plays = row.dj_plays
+            WITH t, row
+            UNWIND row.tags AS tag_name
+            MERGE (g:Tag {key: tag_name})
+            MERGE (t)-[:TAGGED]->(g)
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    # An artist's genres are the union of what its tracks carry, weighted by
+    # how many tracks carry each.
+    driver.execute_query(
+        """
+        MATCH (a:Artist)<-[:BY]-(t:Track)-[:TAGGED]->(g:Tag)
+        WITH a, g, count(*) AS n
+        MERGE (a)-[r:TAGGED]->(g)
+        SET r.tracks = n
+        """,
+        database_=database,
+    )
+    return len(rows)
+
+
 def write_seed_tags(driver: Driver, database: str, rows: list[dict]) -> None:
     """Store each seed's Last.fm tags, so candidates can be filtered by genre later."""
     if not rows:
@@ -65,7 +98,12 @@ def write_seed_tags(driver: Driver, database: str, rows: list[dict]) -> None:
 
 
 def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
-    """Create suggested artists, marked external, and the edge from their seed."""
+    """Write similarity edges and the artists they point at.
+
+    A suggestion that is already in the corpus still gets its edge: those are
+    the links that pull an artist with no co-occurrence at all into the graph.
+    Only genuinely new artists are marked external.
+    """
     if not rows:
         return 0
     for chunk in _chunks(rows, BATCH_SIZE):
@@ -73,7 +111,8 @@ def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
             """
             UNWIND $rows AS row
             MERGE (e:Artist {key: row.key})
-            SET e.name = row.name, e.external = true
+            SET e.name = coalesce(e.name, row.name),
+                e.external = coalesce(e.external, row.external)
             WITH e, row
             MATCH (s:Artist {key: row.seed_key})
             MERGE (s)-[r:SIMILAR_TO]->(e)

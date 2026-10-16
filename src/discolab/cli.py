@@ -24,6 +24,7 @@ from .check import (
     write_page,
 )
 from .config import Settings, load_env_file
+from .enrich import DEFAULT_DB, RekordboxEnricher, join_key
 from .expand import LastfmSimilarExpander
 from .graph import derive, load, query, store
 from .model import RawTrack
@@ -159,6 +160,7 @@ def derive_edges(
         credits = derive.build_collaboration_edges(driver, database)
         containers = derive.build_container_edges(driver, database, min_artists, max_artists)
         summary = derive.assign_communities(driver, database, resolution)
+        reconnected = derive.reconnect_isolated(driver, database)
 
     typer.echo(f"credit edges: {credits}, container edges: {containers}")
     typer.echo(
@@ -169,6 +171,7 @@ def derive_edges(
         f"largest island: {summary['largest_component']} artists, "
         f"bridging artists: {summary['bridging_artists']}"
     )
+    typer.echo(f"artists given a cluster from their similar artists: {reconnected}")
 
 
 @app.command()
@@ -277,6 +280,12 @@ def expand(
     ),
     per_seed: int = typer.Option(20, "--per-seed", help="Similar artists to ask for per seed."),
     min_degree: int = typer.Option(2, "--min-degree", help="Minimum seed degree."),
+    isolated: int = typer.Option(
+        0,
+        "--isolated",
+        help="Also seed from this many artists that have no co-occurrence at all, "
+        "best represented first. Nothing else can reach them.",
+    ),
     genre: str = typer.Option(
         "",
         "--genre",
@@ -295,7 +304,7 @@ def expand(
 
     with store.connect(settings) as driver:
         database = settings.neo4j_database
-        seed_rows = query.seed_artists(driver, database, per_cluster, min_degree)
+        seed_rows = query.seed_artists(driver, database, per_cluster, min_degree, isolated)
         known = set(query.corpus_keys(driver, database))
     if not seed_rows:
         typer.echo("no seeds: run `discolab derive` first", err=True)
@@ -323,9 +332,11 @@ def expand(
     typer.echo(f"expanding from {len(seed_rows)} seeds across taste clusters")
 
     found = 0
-    already = 0
+    linked = 0
     # One row per seed and artist, so that several seeds agreeing on the same
     # artist survives to the graph. Keying by artist alone lost the agreement.
+    # A suggestion already in the corpus keeps its edge: that is a link between
+    # two of the user's artists rather than a candidate.
     fresh: dict[tuple[str, str], dict] = {}
     for position, seed in enumerate(seed_rows, start=1):
         for suggestion in expander.similar(seed["name"]):
@@ -333,11 +344,11 @@ def expand(
             key = normalise(suggestion.name)
             if not key:
                 continue
-            if key in known:
-                already += 1
-                continue
             if suggestion.score < min_score:
                 continue
+            corpus = key in known
+            if corpus:
+                linked += 1
             pair = (key, seed["key"])
             current = fresh.get(pair)
             if current is None or suggestion.score > current["score"]:
@@ -348,16 +359,66 @@ def expand(
                     "seed": seed["name"],
                     "score": suggestion.score,
                     "source": expander.source,
+                    "external": not corpus,
                 }
         typer.echo(f"  expanded {position}/{len(seed_rows)}", err=True)
 
     with store.connect(settings) as driver:
-        written = load.write_expansion(driver, settings.neo4j_database, list(fresh.values()))
+        load.write_expansion(driver, settings.neo4j_database, list(fresh.values()))
 
-    share = f"{already / found:.0%}" if found else "n/a"
+    share = f"{linked / found:.0%}" if found else "n/a"
+    fresh_count = sum(1 for row in fresh.values() if row["external"])
     typer.echo(f"suggestions from {len(seed_rows)} seeds: {found}")
-    typer.echo(f"already in the corpus: {already} ({share})")
-    typer.echo(f"new artists written: {written}")
+    typer.echo(f"links between your own artists: {linked} ({share})")
+    typer.echo(f"new artists written: {fresh_count}")
+
+
+@app.command()
+def enrich(
+    rekordbox: Path = typer.Option(
+        DEFAULT_DB, "--rekordbox", help="Path to the rekordbox master.db."
+    ),
+) -> None:
+    """Attach curated BPM, key and My Tags from rekordbox to tracks and artists."""
+    settings = _settings([])
+    enricher = RekordboxEnricher(rekordbox)
+    reason = enricher.unavailable_reason()
+    if reason:
+        typer.echo(reason, err=True)
+        raise typer.Exit(code=2)
+
+    typer.echo("reading rekordbox")
+    facts = enricher.facts()
+    typer.echo(
+        f"  {len(facts)} rows, {sum(1 for f in facts.values() if f.bpm)} with a BPM, "
+        f"{sum(1 for f in facts.values() if f.tags)} carrying tags"
+    )
+
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        pairs = query.track_paths(driver, database)
+        rows: list[dict] = []
+        seen: set[str] = set()
+        matched = 0
+        for pair in pairs:
+            sheet = facts.get(join_key(pair["path"]))
+            if sheet is None or pair["key"] in seen:
+                continue
+            seen.add(pair["key"])
+            matched += 1
+            rows.append(
+                {
+                    "key": pair["key"],
+                    "bpm": sheet.bpm,
+                    "musical_key": sheet.musical_key,
+                    "rating": sheet.rating,
+                    "dj_plays": sheet.dj_plays,
+                    "tags": list(sheet.tags),
+                }
+            )
+        written = load.write_track_facts(driver, database, rows)
+
+    typer.echo(f"matched {matched} of {len(pairs)} paths, enriched {written} tracks")
 
 
 def _explain_empty(driver, database: str) -> None:

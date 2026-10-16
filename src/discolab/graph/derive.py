@@ -46,6 +46,29 @@ def build_container_edges(
     return result.records[0]["edges"]
 
 
+def reconnect_isolated(driver: Driver, database: str) -> int:
+    """Give artists with no cluster the cluster most of their similar artists share.
+
+    A file-only artist has no co-occurrence with anyone and no credit naming
+    another artist, so it sits outside every cluster even when it plainly
+    belongs to one. Similarity edges carry the missing group membership, which
+    is how a metal record buried in the filesystem finds the rest of the metal.
+    """
+    result = driver.execute_query(
+        """
+        MATCH (a:Artist) WHERE a.community < 0
+        MATCH (a)-[r:SIMILAR_TO]-(n:Artist) WHERE n.community >= 0
+        WITH a, n.community AS community, count(*) AS votes, sum(r.score) AS weight
+        ORDER BY votes DESC, weight DESC
+        WITH a, collect(community)[0] AS community
+        SET a.community = community, a.reconnected = true
+        RETURN count(*) AS reconnected
+        """,
+        database_=database,
+    )
+    return result.records[0]["reconnected"]
+
+
 def assign_communities(
     driver: Driver, database: str, resolution: float = DEFAULT_RESOLUTION
 ) -> dict:

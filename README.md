@@ -27,6 +27,7 @@ Neo4j Browser is at `http://localhost:7474`.
 | `discolab derive [--resolution F] [--min-artists N] [--max-artists N]` | Build artist edges, communities, islands, bridge scores |
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
 | `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
+| `discolab enrich [--rekordbox PATH]` | Attach curated BPM, key and My Tags from rekordbox |
 | `discolab expand [--per-cluster N] [--per-seed N] [--genre TAGS]` | Expand from cluster centres to artists you do not have |
 | `discolab check [--source bridge\|external] [--min-areas N] [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
 | `discolab votes [--path PATH]` | Summarise the ticks and read the criterion |
@@ -186,6 +187,29 @@ uv run discolab check --source external
 One seed suggesting an artist says almost nothing, and that is most of a similarity list. Several seeds agreeing says more, and seeds in different clusters agreeing says most. The page is ordered by how many seeds agree, most first, and shows how many areas they came from.
 
 Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the page.
+
+## Enriching the nodes
+
+```
+brew install sqlcipher
+uv run discolab enrich
+```
+
+Rekordbox holds the BPM, the musical key and the DJ's own tags for every file, and that is the highest signal metadata available here: it is the owner's classification of their own records rather than a service's guess.
+
+Rekordbox 6 encrypts `master.db` with SQLCipher, so reading it needs the `sqlcipher` binary. Every row is local and the key is a published constant.
+
+| Written | From |
+|---|---|
+| `Track.bpm` | `djmdContent.BPM`, stored as a hundredth so 12700 is 127.00 |
+| `Track.musical_key` | `djmdContent.KeyID` through `djmdKey.ScaleName` |
+| `Track.rating`, `Track.dj_plays` | `djmdContent.Rating`, `DJPlayCount` |
+| `Tag` nodes, `(Track)-[:TAGGED]->(Tag)` | `djmdMyTag` through `djmdSongMyTag` |
+| `(Artist)-[:TAGGED {tracks}]->(Tag)` | the union of its tracks, weighted by count |
+
+The join is on the file path, and it must be normalised to NFC first: the filesystem returns decomposed accents and rekordbox composed ones, which made an otherwise exact join match nothing. Measured against the sample library, 1,820 of 1,821 paths match, all 1,820 carry a BPM and a key, and 878 artists end up with tags.
+
+The tags are a curated taxonomy spanning style and region, so they filter far more sharply than Last.fm's. `Raw / Deep / Hypnotic`, `Peak Time / Driving`, `Minimal / Deep Tech`, `Hard Techno`, `Progressive Psy-Trance`, `Maghreb & Mashriq`, `Tuareg Desert Blues`, `Occitan & French Folk`. With BPM and key alongside them, a mix-oriented query is a filter rather than a guess.
 
 ## Known limits
 
