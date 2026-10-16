@@ -28,7 +28,7 @@ Neo4j Browser is at `http://localhost:7474`.
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
 | `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
 | `discolab enrich [--rekordbox PATH] [--deezer] [--min-agreement N] [--workers N]` | Attach curated metadata: BPM and key from rekordbox, genres and labels from Deezer |
-| `discolab expand [--per-cluster N] [--per-seed N] [--genre TAGS]` | Expand from cluster centres to artists you do not have |
+| `discolab expand [--per-cluster N] [--per-seed N] [--isolated N]` | Expand from cluster centres to artists you do not have |
 | `discolab check [--source bridge\|external] [--min-areas N] [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
 | `discolab votes [--path PATH]` | Summarise the ticks and read the criterion |
 | `discolab stats [--islands N]` | Node, edge and island counts |
@@ -170,13 +170,19 @@ Ranking artists that bridge the graph only returns artists you already have, bec
 `discolab expand` takes the most central member of each taste cluster, asks Last.fm for similar artists, and writes the ones you do not have as external nodes.
 
 ```
-uv run discolab expand --per-cluster 3
-uv run discolab check --source external --genre "electronic,techno,house,psytrance"
+uv run discolab check --cluster 13
+uv run discolab check --cluster 13 --periphery
 ```
 
-`--per-cluster` takes the top artists of every cluster rather than the loudest artists overall, so the seeds spread across the whole taste instead of concentrating in the largest island.
+Narrowing is done by scoping, not by filtering. The graph stays complete and unfiltered, and a cluster is a choice about where to look rather than a value baked into the rank.
 
-Expansion stores each seed's Last.fm tags on the seed, and `check --genre` counts agreement only from seeds carrying one of the listed tags. Filtering at expansion time is not enough on its own: the graph keeps every earlier run, so a seed expanded before the filter existed still counts. That is the difference between a filter on what gets fetched and a filter on what gets shown.
+| Scope | What it shows |
+|---|---|
+| `--cluster N` | artists outside your library reached from that cluster's seeds |
+| `--cluster N --periphery` | that cluster's own artists with the fewest internal edges |
+| nothing | the whole taste, ranked by how many seeds agree |
+
+Cluster 13 holds six artists and produced the first track kept from a discovery page. Small clusters are the productive ones.
 
 Then build the page from those artists rather than from your own:
 

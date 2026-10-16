@@ -295,12 +295,6 @@ def expand(
         help="Also seed from this many artists that have no co-occurrence at all, "
         "best represented first. Nothing else can reach them.",
     ),
-    genre: str = typer.Option(
-        "",
-        "--genre",
-        help="Only expand from seeds carrying one of these tags, comma separated. "
-        "For example: electronic,techno,house.",
-    ),
     min_score: float = typer.Option(
         0.0, "--min-score", help="Ignore matches weaker than this."
     ),
@@ -320,24 +314,6 @@ def expand(
         raise typer.Exit(code=2)
 
     expander = LastfmSimilarExpander(settings.lastfm_api_key, per_seed)
-    wanted = {tag.strip().casefold() for tag in genre.split(",") if tag.strip()}
-
-    typer.echo(f"tagging {len(seed_rows)} seeds")
-    tag_rows = []
-    for position, seed in enumerate(seed_rows, start=1):
-        seed["tags"] = sorted({tag.casefold() for tag in expander.tags(seed["name"])})
-        tag_rows.append({"key": seed["key"], "tags": seed["tags"]})
-        if position % 25 == 0:
-            typer.echo(f"  tagged {position}/{len(seed_rows)}", err=True)
-    with store.connect(settings) as driver:
-        load.write_seed_tags(driver, settings.neo4j_database, tag_rows)
-
-    if wanted:
-        seed_rows = [seed for seed in seed_rows if wanted & set(seed["tags"])]
-        typer.echo(f"seeds tagged {', '.join(sorted(wanted))}: {len(seed_rows)}")
-        if not seed_rows:
-            typer.echo("no seed carried any of those tags", err=True)
-            raise typer.Exit(code=2)
     typer.echo(f"expanding from {len(seed_rows)} seeds across taste clusters")
 
     found = 0
@@ -828,12 +804,6 @@ def check(
         "--min-areas",
         help="Require this many separate taste areas to agree. 2 is the useful setting.",
     ),
-    genre: str = typer.Option(
-        "",
-        "--genre",
-        help="Deprecated. Narrowing is done with --cluster instead.",
-        hidden=True,
-    ),
     cluster: int = typer.Option(
         -1,
         "--cluster",
@@ -896,9 +866,6 @@ def check(
         save_video_cache(cache, videos)
         with_track = sum(1 for row in rows if videos.get(row["name"]))
         typer.echo(f"artists with a track resolved: {with_track}/{len(rows)}")
-
-    if source == "external" and wanted:
-        typer.echo(f"genre filter: {', '.join(wanted[:4])}...")
 
     candidates = [
         Candidate(
