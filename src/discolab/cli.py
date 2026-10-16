@@ -416,33 +416,39 @@ def expand(
     # A suggestion already in the corpus keeps its edge: that is a link between
     # two of the user's artists rather than a candidate.
     fresh: dict[tuple[str, str], dict] = {}
-    for position, seed in enumerate(seed_rows, start=1):
-        for suggestion in expander.similar(seed["name"]):
-            found += 1
-            key = normalise(suggestion.name)
-            if not key:
-                continue
-            if suggestion.score < min_score:
-                continue
-            corpus = key in known
-            if corpus:
-                linked += 1
-            pair = (key, seed["key"])
-            current = fresh.get(pair)
-            if current is None or suggestion.score > current["score"]:
-                fresh[pair] = {
-                    "key": key,
-                    "name": suggestion.name,
-                    "seed_key": seed["key"],
-                    "seed": seed["name"],
-                    "score": suggestion.score,
-                    "source": expander.source,
-                    "external": not corpus,
-                }
-        typer.echo(f"  expanded {position}/{len(seed_rows)}", err=True)
-
+    dirty: list[tuple[str, str]] = []
+    # Flushed as it goes. Held to the end, a run that takes twenty minutes shows
+    # an unchanged graph until it finishes, which looks the same as being stuck.
     with store.connect(settings) as driver:
-        load.write_expansion(driver, settings.neo4j_database, list(fresh.values()))
+        for position, seed in enumerate(seed_rows, start=1):
+            for suggestion in expander.similar(seed["name"]):
+                found += 1
+                key = normalise(suggestion.name)
+                if not key:
+                    continue
+                if suggestion.score < min_score:
+                    continue
+                corpus = key in known
+                if corpus:
+                    linked += 1
+                pair = (key, seed["key"])
+                current = fresh.get(pair)
+                if current is None or suggestion.score > current["score"]:
+                    fresh[pair] = {
+                        "key": key,
+                        "name": suggestion.name,
+                        "seed_key": seed["key"],
+                        "seed": seed["name"],
+                        "score": suggestion.score,
+                        "source": expander.source,
+                        "external": not corpus,
+                    }
+                    dirty.append(pair)
+            if position % 100 == 0:
+                load.write_expansion(driver, database, [fresh[pair] for pair in dirty])
+                dirty = []
+                typer.echo(f"  expanded {position}/{len(seed_rows)}", err=True)
+        load.write_expansion(driver, database, [fresh[pair] for pair in dirty])
 
     share = f"{linked / found:.0%}" if found else "n/a"
     fresh_count = sum(1 for row in fresh.values() if row["external"])
