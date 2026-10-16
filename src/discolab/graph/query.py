@@ -258,6 +258,34 @@ def cluster_periphery(
     return [dict(record) for record in records]
 
 
+def track_paths(driver: Driver, database: str) -> list[dict]:
+    records = driver.execute_query(
+        "MATCH (t:Track) UNWIND t.paths AS p RETURN t.key AS key, p AS path",
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
+def artist_tempo(
+    driver: Driver, database: str, keys: Sequence[str]
+) -> dict[str, dict]:
+    """Tempo range and keys per artist, from the tracks the library holds."""
+    records = driver.execute_query(
+        """
+        UNWIND $keys AS key
+        MATCH (a:Artist {key: key})<-[:BY]-(t:Track)
+        WHERE t.bpm IS NOT NULL
+        WITH key, count(t) AS tracks, min(t.bpm) AS low, max(t.bpm) AS high,
+             avg(t.bpm) AS mean,
+             [k IN collect(DISTINCT t.musical_key) WHERE k IS NOT NULL][0..4] AS musical_keys
+        RETURN key, tracks, low, high, mean, musical_keys
+        """,
+        keys=list(keys),
+        database_=database,
+    ).records
+    return {record["key"]: dict(record) for record in records}
+
+
 def artists_needing_genres(
     driver: Driver,
     database: str,

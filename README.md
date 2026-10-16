@@ -8,6 +8,7 @@ Three sources are aggregated into one graph: the audio files on disk, Last.fm sc
 
 - Python 3.11 or newer, and `uv`
 - A container runtime for Neo4j: Docker or OrbStack
+- `sqlcipher`, for the rekordbox step: `brew install sqlcipher`. Without it that step is skipped and every other source still runs.
 
 ## Setup
 
@@ -23,7 +24,7 @@ Neo4j Browser is at `http://localhost:7474`.
 
 | Step | Command | What it does |
 |---|---|---|
-| 1 | `discolab ingest` | Aggregate every configured source, resolve the names, load the graph |
+| 1 | `discolab ingest` | Aggregate every source, resolve the names, load the graph, then attach rekordbox's BPM, keys and tags |
 | 2 | `discolab enrich` | Genres and labels from Deezer |
 | 3 | `discolab guess` | Derive taste communities, expand past them, write the page |
 
@@ -48,6 +49,28 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 | `discolab prune` | Drop unplayed tracks and the artists left with none |
 | `discolab reset --yes` | Delete every node and relationship |
 | `discolab spotify-login` | Authorise against Spotify once, caching the refresh token |
+
+## What rekordbox adds
+
+`ingest` reads the BPM, the musical key and the DJ's own tags out of `master.db` and writes them onto the tracks already in the graph.
+
+It is local and it costs nothing beyond one binary: no network, no account, and the only requirement is `sqlcipher`, since rekordbox 6 encrypts the database with a published constant key. Without it the step reports why and the rest of the run continues.
+
+| Written | From |
+|---|---|
+| `Track.bpm` | `djmdContent.BPM`, stored as a hundredth so 12700 is 127.00 |
+| `Track.musical_key` | `djmdContent.KeyID` through `djmdKey.ScaleName` |
+| `Track.rating`, `Track.dj_plays` | `djmdContent.Rating`, `DJPlayCount` |
+| `Tag` nodes, `(Track)-[:TAGGED]->(Tag)` | `djmdMyTag` through `djmdSongMyTag` |
+| `(Artist)-[:TAGGED {tracks}]->(Tag)` | the union of its tracks, weighted by count |
+
+The join is on the file path, folded to NFC first. The filesystem returns decomposed accents and rekordbox composed ones, so without that fold an exact join matches nothing while looking correct.
+
+Measured on one library: 1,832 rows, every one with a BPM and a key, and 1,543 carrying at least one tag.
+
+The tags are a curated taxonomy spanning style and region, so they filter far more sharply than Last.fm's: `Minimal / Deep Tech`, `Raw / Deep / Hypnotic`, `Peak Time / Driving`, `Hard Techno`, `Maghreb & Mashriq`. With BPM and key alongside them, a mix-oriented query is a filter rather than a guess.
+
+`--no-rekordbox` skips the step.
 
 ## Checking the candidates
 

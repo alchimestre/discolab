@@ -72,6 +72,39 @@ def write_artist_genres(driver: Driver, database: str, rows: list[dict]) -> int:
     return len(rows)
 
 
+def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Attach curated facts and their tags to tracks, then roll tags up to artists."""
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (t:Track {key: row.key})
+            SET t.bpm = row.bpm, t.musical_key = row.musical_key,
+                t.rating = row.rating, t.dj_plays = row.dj_plays
+            WITH t, row
+            UNWIND row.tags AS tag_name
+            MERGE (g:Tag {key: tag_name})
+            MERGE (t)-[:TAGGED]->(g)
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    # An artist's genres are the union of what its tracks carry, weighted by
+    # how many tracks carry each.
+    driver.execute_query(
+        """
+        MATCH (a:Artist)<-[:BY]-(t:Track)-[:TAGGED]->(g:Tag)
+        WITH a, g, count(*) AS n
+        MERGE (a)-[r:TAGGED]->(g)
+        SET r.tracks = n
+        """,
+        database_=database,
+    )
+    return len(rows)
+
+
 def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
     """Write similarity edges and the artists they point at.
 

@@ -27,6 +27,7 @@ from .check import (
 )
 from .config import Settings, load_env_file
 from .enrich import DeezerEnricher
+from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .graph import derive, load, query, store
 from .model import RawTrack
@@ -63,7 +64,13 @@ def ingest(
     months: int = typer.Option(
         24,
         "--months",
-        help="Only the last N months of scrobbles, 0 for all history. Tastes move.",
+        help="Only read the last N months of scrobbles, 0 for all history. Tastes move.",
+    ),
+    rekordbox: bool = typer.Option(
+        True,
+        "--rekordbox/--no-rekordbox",
+        help="Take BPM, key and the DJ's tags from rekordbox. Local, and skipped "
+        "when sqlcipher is absent.",
     ),
 ) -> None:
     """Read every configured source, then normalise it into the graph."""
@@ -151,6 +158,54 @@ def ingest(
             store.clear(driver, settings.neo4j_database)
         load.load_catalog(driver, settings.neo4j_database, catalog)
     typer.echo("loaded")
+
+    if rekordbox:
+        _apply_rekordbox_facts(settings)
+
+
+def _apply_rekordbox_facts(settings: Settings) -> None:
+    """Attach BPM, key and the DJ's tags from rekordbox, when it can be read.
+
+    Local and free: no network, and no dependency beyond the sqlcipher binary
+    that opens the encrypted database. Without it every other source stays.
+    """
+    reader = RekordboxReader()
+    reason = reader.unavailable_reason()
+    if reason:
+        typer.echo(f"rekordbox: skipped, {reason}", err=True)
+        return
+    try:
+        facts = reader.facts()
+    except RekordboxError as error:
+        typer.echo(f"rekordbox: skipped, {error}", err=True)
+        return
+
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        pairs = query.track_paths(driver, database)
+        rows: list[dict] = []
+        seen: set[str] = set()
+        for pair in pairs:
+            sheet = facts.get(join_key(pair["path"]))
+            if sheet is None or pair["key"] in seen:
+                continue
+            seen.add(pair["key"])
+            rows.append(
+                {
+                    "key": pair["key"],
+                    "bpm": sheet.bpm,
+                    "musical_key": sheet.musical_key,
+                    "rating": sheet.rating,
+                    "dj_plays": sheet.dj_plays,
+                    "tags": list(sheet.tags),
+                }
+            )
+        load.write_track_facts(driver, database, rows)
+    typer.echo(
+        f"rekordbox: {len(rows)} of {len(pairs)} paths matched, "
+        f"{sum(1 for row in rows if row['bpm'])} with a BPM, "
+        f"{sum(1 for row in rows if row['tags'])} carrying tags"
+    )
 
 
 @app.command("derive")
@@ -529,6 +584,7 @@ def clusters(
                         time.sleep(0.4)
             keys = [c["key"] for c in candidates]
             sources = query.artist_sources(driver, database, keys)
+            tempo = query.artist_tempo(driver, database, keys)
             votes = read_votes(out / "votes.json")
             nav = f'<p><a href="index.html">all clusters</a> · cluster {cluster}</p>'
             page = build_page(
@@ -550,6 +606,9 @@ def clusters(
                         areas=1,
                         styles=tuple(sources.get(c["key"], {}).get("styles", ())),
                         labels=tuple(sources.get(c["key"], {}).get("labels", ())),
+                        bpm_low=tempo.get(c["key"], {}).get("low"),
+                        bpm_high=tempo.get(c["key"], {}).get("high"),
+                        musical_keys=tuple(tempo.get(c["key"], {}).get("musical_keys") or ()),
                     )
                     for c in candidates
                 ],
@@ -775,6 +834,7 @@ def check(
         )
         titles = query.library_titles(driver, database)
         sources = query.artist_sources(driver, database, keys)
+        tempo = query.artist_tempo(driver, database, keys)
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
@@ -810,6 +870,9 @@ def check(
             areas=row.get("areas", 0),
             styles=tuple(sources.get(row["key"], {}).get("styles", ())),
             labels=tuple(sources.get(row["key"], {}).get("labels", ())),
+            bpm_low=tempo.get(row["key"], {}).get("low"),
+            bpm_high=tempo.get(row["key"], {}).get("high"),
+            musical_keys=tuple(tempo.get(row["key"], {}).get("musical_keys") or ()),
         )
         for row in rows
     ]
