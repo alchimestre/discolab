@@ -187,8 +187,19 @@ class SpotifyProvider:
         tracks: dict[tuple[str, str], RawTrack] = {}
         skipped: list[tuple[str, str]] = []
 
+        sources: list[tuple[str, list[tuple[str, str, str | None]]]] = [
+            ("Liked Songs", self._liked())
+        ]
+        for playlist in self._playlists():
+            name = playlist.get("name") or playlist["id"]
+            try:
+                sources.append((name, self._playlist_tracks(playlist["id"])))
+            except SpotifyError as error:
+                # A followed playlist can refuse its items; the rest still read.
+                skipped.append((name, str(error)[:160]))
+
         containers: dict[tuple[str, str], list[tuple[str, str]]] = {}
-        for name, entries in self._sources():
+        for name, entries in sources:
             for artist, title, album in entries:
                 key = (artist, title)
                 if not artist or not title:
@@ -221,12 +232,6 @@ class SpotifyProvider:
             )
         return ScanResult(source=self.name, tracks=tuple(result), skipped=tuple(skipped))
 
-    def _sources(self):
-        """Yield (name, entries) where an entry is artist, title, album."""
-        yield "Liked Songs", self._liked()
-        for playlist in self._playlists():
-            yield playlist["name"], self._playlist_tracks(playlist["id"])
-
     def _playlists(self) -> list[dict]:
         playlists: list[dict] = []
         offset = 0
@@ -246,8 +251,7 @@ class SpotifyProvider:
             page = self.client.get("/me/tracks", limit=50, offset=offset)
             items = page.get("items") or []
             for item in items:
-                track = (item or {}).get("track") or {}
-                entries.append(_entry(track))
+                entries.append(_entry(item or {}))
             if len(items) < 50:
                 break
             offset += 50
@@ -257,23 +261,28 @@ class SpotifyProvider:
         entries: list[tuple[str, str, str | None]] = []
         offset = 0
         while True:
+            # /tracks was withdrawn; the playlist endpoint is /items now.
             page = self.client.get(
-                f"/playlists/{playlist_id}/tracks",
+                f"/playlists/{playlist_id}/items",
                 limit=PAGE_SIZE,
                 offset=offset,
                 additional_types="track",
             )
             items = page.get("items") or []
             for item in items:
-                track = (item or {}).get("track") or {}
-                entries.append(_entry(track))
+                entries.append(_entry(item or {}))
             if len(items) < PAGE_SIZE:
                 break
             offset += PAGE_SIZE
         return entries
 
 
-def _entry(track: dict) -> tuple[str, str, str | None]:
+def _entry(item: dict) -> tuple[str, str, str | None]:
+    """A playlist entry wraps its track under `item`; a saved track uses `track`."""
+    track = item.get("item") or item.get("track") or {}
+    if not isinstance(track, dict):
+        # A local file or an entry whose track is no longer available.
+        return "", "", None
     artists = track.get("artists") or []
     artist = artists[0].get("name", "") if artists else ""
     album = (track.get("album") or {}).get("name")

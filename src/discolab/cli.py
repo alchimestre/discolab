@@ -116,6 +116,12 @@ def ingest(
         raw.extend(spotify_scan.tracks)
         unparsed.extend(spotify_scan.skipped)
         typer.echo(f"spotify: {len(spotify_scan.tracks)} distinct tracks")
+        unreadable = [item for item in spotify_scan.skipped if "403" in item[1]]
+        if unreadable:
+            typer.echo(
+                f"spotify: {len(unreadable)} playlists unreadable. A development-mode app "
+                "cannot read the contents of a playlist it does not own."
+            )
 
     catalog = build_catalog(raw)
     played = sum(1 for track in catalog.tracks if track.plays)

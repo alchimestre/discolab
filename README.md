@@ -144,6 +144,12 @@ For an HTTPS redirect URI, either point `SPOTIFY_TLS_CERT` and `SPOTIFY_TLS_KEY`
 
 The refresh token is cached in `out/spotify-token.json`, which is not committed.
 
+Two limits come from Spotify rather than from here.
+
+A development-mode app can read its own playlists but not the contents of a public playlist owned by someone else. Those return 403 on their items, and the count of them is reported at ingest instead of being skipped silently. Reading them needs Extended Quota review. Playlists you own are unaffected.
+
+The playlist contents endpoint is `/playlists/{id}/items`; `/tracks` was withdrawn and now returns 403. Playlist entries wrap the track under `item`, while saved tracks use `track`, and both are read.
+
 ## Known limits
 
 - Edges come only from title credits and shared containers. A library of single-artist albums produces almost none.
