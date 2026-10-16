@@ -48,8 +48,14 @@ class Cluster:
         """
         if not self.genres:
             return f"cluster {self.key}"
+        # A name needs enough tagged artists behind it to mean anything, but not
+        # a fraction of the whole cluster: only six per cent of artists are
+        # tagged at all, so a coverage threshold would name nothing. Eight is a
+        # floor on the evidence, and the panel states the sample it came from.
+        if self.tagged < 8:
+            return f"cluster {self.key}"
         name, count = self.genres[0]
-        if self.tagged and count >= self.tagged * 0.5:
+        if count >= self.tagged * 0.5:
             return name
         return "mixed"
 
@@ -367,23 +373,24 @@ function render(key) {
 
 for (const b of bubbles) {
   const key = Number(b.dataset.key);
+  // Hovering inspects, clicking scopes, and the two are separate: the list stays
+  // on the cluster chosen while the pointer moves over the rest. Returning early
+  // on a lock made every other cluster unreadable once one was picked.
   b.addEventListener('mouseenter', () => {
-    if (locked !== null) return;
     emphasise(key);
     const c = byKey.get(key);
-    tip.textContent = c.label + ' · ' + c.size + ' artists';
-    render(key);
+    tip.textContent = c.label + ' · ' + c.size.toLocaleString() + ' artists';
   });
   b.addEventListener('focus', () => b.dispatchEvent(new Event('mouseenter')));
   b.addEventListener('mouseleave', () => {
-    if (locked !== null) return;
-    emphasise(null);
+    emphasise(locked);
     tip.textContent = '';
-    render(locked ?? biggest);
   });
   b.addEventListener('click', () => {
     locked = locked === key ? null : key;
-    for (const other of bubbles) other.classList.toggle('active', Number(other.dataset.key) === locked);
+    for (const other of bubbles) {
+      other.classList.toggle('active', Number(other.dataset.key) === locked);
+    }
     emphasise(locked);
     render(locked ?? biggest);
   });
