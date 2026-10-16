@@ -48,7 +48,7 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
-def write_artist_sources(driver: Driver, database: str, rows: list[dict]) -> int:
+def write_artist_genres(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach Discogs styles and label names, and note that the artist was asked about.
 
     Labels are a property rather than nodes. Affinity through them measured at
@@ -62,9 +62,9 @@ def write_artist_sources(driver: Driver, database: str, rows: list[dict]) -> int
             """
             UNWIND $rows AS row
             MATCH (a:Artist {key: row.key})
-            SET a.discogs_styles = row.styles,
-                a.discogs_labels = row.labels,
-                a.discogs_checked = true
+            SET a.styles = row.styles,
+                a.labels = row.labels,
+                a.enriched = true
             """,
             rows=chunk,
             database_=database,

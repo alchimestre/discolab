@@ -45,13 +45,13 @@ def delete_orphans(driver: Driver, database: str) -> dict[str, int]:
     return removed
 
 
-def clear_discogs_flag(driver: Driver, database: str, external_only: bool) -> int:
+def clear_enriched_flag(driver: Driver, database: str, external_only: bool) -> int:
     """Forget that Discogs was consulted, so it is consulted again."""
     clause = "AND coalesce(a.external, false) = true" if external_only else ""
     result = driver.execute_query(
         f"""
-        MATCH (a:Artist) WHERE coalesce(a.discogs_checked, false) = true {clause}
-        SET a.discogs_checked = false
+        MATCH (a:Artist) WHERE coalesce(a.enriched, false) = true {clause}
+        SET a.enriched = false
         RETURN count(a) AS cleared
         """,
         database_=database,

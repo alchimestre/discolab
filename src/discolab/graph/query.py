@@ -156,8 +156,8 @@ def artist_sources(
         UNWIND $keys AS key
         MATCH (a:Artist {key: key})
         RETURN a.key AS key,
-               coalesce(a.discogs_styles, []) AS styles,
-               coalesce(a.discogs_labels, []) AS labels
+               coalesce(a.styles, []) AS styles,
+               coalesce(a.labels, []) AS labels
         """,
         keys=list(keys),
         database_=database,
@@ -194,7 +194,7 @@ def clusters(
     for record in driver.execute_query(
         """
         MATCH (a:Artist) WHERE a.community >= 0
-        UNWIND coalesce(a.discogs_styles, []) AS style
+        UNWIND coalesce(a.styles, []) AS style
         WITH a.community AS cluster, style, count(*) AS n
         ORDER BY n DESC
         WITH cluster, collect(style)[0..5] AS top_styles
@@ -278,7 +278,7 @@ def artist_tempo(
     return {record["key"]: dict(record) for record in records}
 
 
-def artists_needing_discogs(
+def artists_needing_genres(
     driver: Driver,
     database: str,
     limit: int,
@@ -297,7 +297,7 @@ def artists_needing_discogs(
     records = driver.execute_query(
         f"""
         MATCH (a:Artist)
-        WHERE coalesce(a.discogs_checked, false) = false {clause}
+        WHERE coalesce(a.enriched, false) = false {clause}
         WITH a, size([(seed:Artist)-[:SIMILAR_TO]->(a) | seed]) AS agreement
         WHERE agreement >= $min_agreement
         ORDER BY agreement DESC, a.name
@@ -306,23 +306,6 @@ def artists_needing_discogs(
         """,
         min_agreement=min_agreement,
         limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
-
-
-def artists_without_discogs(
-    driver: Driver, database: str, keys: Sequence[str]
-) -> list[dict]:
-    """Of the given artists, the ones Discogs has not been asked about."""
-    records = driver.execute_query(
-        """
-        UNWIND $keys AS key
-        MATCH (a:Artist {key: key})
-        WHERE coalesce(a.discogs_checked, false) = false
-        RETURN a.key AS key, a.name AS name
-        """,
-        keys=list(keys),
         database_=database,
     ).records
     return [dict(record) for record in records]
@@ -396,7 +379,6 @@ def external_candidates(
     database: str,
     limit: int = 25,
     min_areas: int = 0,
-    tags: Sequence[str] = (),
 ) -> list[dict]:
     """Artists from outside the corpus, ranked by how many seeds agree on them.
 
@@ -404,30 +386,14 @@ def external_candidates(
     similarity list. Several seeds agreeing says more, and seeds sitting in
     different communities of the graph agreeing says most.
 
-    When tags are given, the seeds counted are those carrying one of them and
-    the candidates kept are those carrying one of them too. A candidate whose
-    genre is simply unknown is kept: an artist nothing has been asked about is
-    not a candidate that failed the filter, and dropping it would hide most of
-    the graph until every enrichment pass has finished.
+    There is no genre predicate. Narrowing happens by scoping to a cluster, so
+    the graph stays complete and the filter is a choice about where to look
+    rather than a value baked into the rank.
     """
     records = driver.execute_query(
         """
         MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
         WHERE coalesce(e.external, false) = true
-          AND ($tags = [] OR $tags IS NULL
-               OR any(t IN coalesce(s.tags, []) WHERE t IN $tags)
-               OR EXISTS {
-                    MATCH (s)-[:TAGGED]->(sg:Tag) WHERE toLower(sg.key) IN $tags
-                  })
-          AND ($tags = []
-               OR (size(coalesce(e.discogs_styles, [])) = 0
-                   AND size(coalesce(e.tags, [])) = 0
-                   AND NOT EXISTS { MATCH (e)-[:TAGGED]->(:Tag) })
-               OR any(t IN coalesce(e.discogs_styles, []) WHERE toLower(t) IN $tags)
-               OR any(t IN coalesce(e.tags, []) WHERE t IN $tags)
-               OR EXISTS {
-                    MATCH (e)-[:TAGGED]->(eg:Tag) WHERE toLower(eg.key) IN $tags
-                  })
         WITH e,
              count(DISTINCT s) AS seed_count,
              count(DISTINCT s.community) AS areas,
@@ -440,7 +406,6 @@ def external_candidates(
         ORDER BY seed_count DESC, areas DESC, mean_score DESC
         LIMIT $limit
         """,
-        tags=list(tags),
         min_areas=min_areas,
         limit=limit,
         database_=database,

@@ -106,164 +106,92 @@ class MusicBrainzEnricher:
         )
 
 
-DISCOGS_ROOT = "https://api.discogs.com"
-DISCOGS_AGENT = "discolab/0.1 +local"
-# Authenticated Discogs allows 60 requests a minute, which is one a second.
-DISCOGS_INTERVAL = 1.05
-DISCOGS_PER_PAGE = 25
+DEEZER_ROOT = "https://api.deezer.com"
+DEEZER_AGENT = "discolab/0.1 +local"
+# Deezer documents 50 requests every 5 seconds. Measured: 300 requests went
+# through in 3.7 seconds with no rejection, where Discogs allows one a second.
+DEEZER_ALBUMS_SAMPLED = 3
+# A DistroKid or CD Baby placeholder is not a label anybody curates.
+PLACEHOLDER_LABEL = re.compile(
+    r"records dk|tune core|tunecore|cd baby|distrokid|amuse io|routenote|"
+    r"believe digital|the orchard|create music group",
+    re.IGNORECASE,
+)
 
 
-class DiscogsError(RuntimeError):
+class DeezerError(RuntimeError):
     pass
 
 
 @dataclass(frozen=True, slots=True)
 class ReleaseFacts:
-    styles: tuple[str, ...]
     genres: tuple[str, ...]
     labels: tuple[str, ...]
-    countries: tuple[str, ...]
 
 
-class DiscogsEnricher:
-    """Styles and labels, asked for one artist at a time and only when needed.
-
-    A search restricted to the artist returns each release with its styles,
-    genres and labels in a single request, so an artist costs one call rather
-    than one per release.
-    """
-
-    def __init__(self, token: str, agent: str = DISCOGS_AGENT):
-        self.token = token
-        self.agent = agent
-
-    def unavailable_reason(self) -> str | None:
-        return None if self.token else "set DISCOGS_TOKEN in .env"
-
-    def facts(self, artist: str) -> ReleaseFacts | None:
-        query = urllib.parse.urlencode(
-            {
-                "artist": artist,
-                "type": "release",
-                "per_page": DISCOGS_PER_PAGE,
-            }
-        )
-        request = urllib.request.Request(
-            f"{DISCOGS_ROOT}/database/search?{query}",
-            headers={
-                "User-Agent": self.agent,
-                "Authorization": f"Discogs token={self.token}",
-            },
-        )
-        time.sleep(DISCOGS_INTERVAL)
-        try:
-            with urllib.request.urlopen(request, timeout=25) as response:
-                payload = json.loads(response.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as error:
-            if error.code == 429:
-                time.sleep(5)
-            return None
-        except Exception:
-            return None
-
-        results = payload.get("results") or []
-        if not results:
-            return None
-
-        def collect(field: str) -> tuple[str, ...]:
-            seen: set[str] = set()
-            for item in results:
-                value = item.get(field)
-                if isinstance(value, list):
-                    seen.update(str(entry).strip() for entry in value if entry)
-                elif value:
-                    seen.add(str(value).strip())
-            return tuple(sorted(seen))
-
-        # Every release credits several labels, so collecting them all makes a
-        # major appear from one compilation and every label connect to exactly
-        # one artist. The label an artist is actually signed to is the one that
-        # recurs across their releases.
-        counts: dict[str, int] = {}
-        for item in results:
-            value = item.get("label")
-            names = value if isinstance(value, list) else [value]
-            for name in names:
-                text = str(name or "").strip()
-                if text:
-                    counts[text] = counts.get(text, 0) + 1
-        primary = [
-            name
-            for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-            if count >= 2
-        ][:3]
-
-        return ReleaseFacts(
-            styles=collect("style"),
-            genres=collect("genre"),
-            labels=clean_labels(primary),
-            countries=collect("country"),
-        )
-
-
-# A search result's label field carries studios, pressing plants and the
-# occasional edition title alongside real labels.
-STUDIO_PATTERN = re.compile(
-    r"\bstudios?\b|\bmastering\b|\bpressed\b|\bmanufactured\b|\bdistributed\b|"
-    r"\brecorded at\b|\bmixed at\b|\bremastered\b|\bglass master\b|"
-    r"\bduplicating\b|\brecords gmbh\b|\bmanufacturing\b",
-    re.IGNORECASE,
-)
-EDITION_PATTERN = re.compile(
-    r"\bedition\b|\banniversary\b|\bdeluxe\b|\breissue\b|\bsuper limited\b|"
-    r"\bvol\.?\s*\d|\bpart \d|\bcomplete\b|\bbox set\b",
-    re.IGNORECASE,
-)
-MAX_LABEL_LENGTH = 42
-
-# Discogs records pressing plants, rights societies and a placeholder in the
-# same field as real labels. Without this the labels printed beside a
-# candidate are Optimal Media and GZ Media, which curate nothing.
-NOT_A_LABEL = frozenset(
-    {
-        "not on label", "unknown", "none",
-        "optimal media gmbh", "optimal media production", "optimal media solutions",
-        "mpo", "gz media", "gz digital media", "sonopress", "sony dadc",
-        "record industry", "dubplates & mastering", "copyright control",
-        "arvato", "cinram", "disctronics", "docdata", "kdisc", "nimbus",
-        "deluxe global media", "universal m&l", "edc", "ims", "pdo", "pmdc",
-        "speciality records", "www gzmedia com", "handwerkskammer",
-        "sabam", "gema", "sacem", "buma stemra", "biem", "ascap", "bmi",
-        "prs", "mcps", "stemra", "spa", "siae", "teosto", "ncb", "kobalt",
-        "no label", "white label", "test pressing",
-    }
-)
-
-
-def _label_key(name: str) -> str:
-    """Fold a label name for comparison, keeping letters and digits only."""
+def _name_key(name: str) -> str:
+    """Fold a name for comparison, keeping letters and digits only."""
     return re.sub(r"[^a-z0-9]+", " ", name.casefold()).strip()
 
 
-def clean_labels(labels: Sequence[str]) -> tuple[str, ...]:
-    """Keep real label names, for display.
+class DeezerEnricher:
+    """Genres and labels for an artist, four thousand requests a minute.
 
-    A search result's label field carries studios, pressing plants, rights
-    societies and the occasional edition title alongside real labels, and
-    printing "Sterling Sound" where a label belongs is worse than printing
-    nothing.
+    The route matters. Searching albums matches compilations and soundtracks
+    that merely share a name, which is how Rome came back as Films and Video
+    Games. Asking for the artist, then that artist's own albums, returns the
+    real labels: Warp for Squarepusher, Dekmantel for Polygonia, MORD for
+    Quelza.
     """
-    kept = []
-    for label in labels:
-        text = label.strip()
-        if not text or len(text) > MAX_LABEL_LENGTH:
-            continue
-        if STUDIO_PATTERN.search(text) or EDITION_PATTERN.search(text):
-            continue
-        if _label_key(text) in NOT_A_LABEL or _label_key(text).startswith("not on label"):
-            continue
-        kept.append(text)
-    return tuple(sorted(set(kept)))
+
+    def __init__(self, agent: str = DEEZER_AGENT, timeout: float = 15.0):
+        self.agent = agent
+        self.timeout = timeout
+
+    def facts(self, artist: str) -> ReleaseFacts | None:
+        found = self._get("/search/artist", {"q": artist, "limit": 1})
+        items = (found or {}).get("data") or []
+        if not items:
+            return None
+        match = items[0]
+        # Deezer answers a near miss with a different artist: Rome resolves to
+        # Romé. Anything but the name itself is the wrong artist.
+        if _name_key(match.get("name", "")) != _name_key(artist):
+            return None
+
+        albums = self._get(f"/artist/{match['id']}/albums", {"limit": DEEZER_ALBUMS_SAMPLED})
+        albums = (albums or {}).get("data") or []
+        if not albums:
+            return ReleaseFacts(genres=(), labels=())
+
+        genres: set[str] = set()
+        labels: set[str] = set()
+        for album in albums[:DEEZER_ALBUMS_SAMPLED]:
+            detail = self._get(f"/album/{album['id']}")
+            if not detail:
+                continue
+            for genre in (detail.get("genres") or {}).get("data", []):
+                if genre.get("name"):
+                    genres.add(genre["name"])
+            label = (detail.get("label") or "").strip()
+            if label and not PLACEHOLDER_LABEL.search(label):
+                labels.add(label)
+        return ReleaseFacts(genres=tuple(sorted(genres)), labels=tuple(sorted(labels)))
+
+    def _get(self, path: str, params: dict | None = None) -> dict | None:
+        url = DEEZER_ROOT + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(url, headers={"User-Agent": self.agent})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as error:
+            if error.code == 429:
+                time.sleep(2)
+            return None
+        except Exception:
+            return None
 
 
 def join_key(path: str) -> str:

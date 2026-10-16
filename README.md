@@ -27,7 +27,7 @@ Neo4j Browser is at `http://localhost:7474`.
 | `discolab derive [--resolution F] [--min-artists N] [--max-artists N]` | Build artist edges, communities, islands, bridge scores |
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
 | `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
-| `discolab enrich [--rekordbox PATH]` | Attach curated BPM, key and My Tags from rekordbox |
+| `discolab enrich [--rekordbox PATH] [--deezer] [--min-agreement N] [--workers N]` | Attach curated metadata: BPM and key from rekordbox, genres and labels from Deezer |
 | `discolab expand [--per-cluster N] [--per-seed N] [--genre TAGS]` | Expand from cluster centres to artists you do not have |
 | `discolab check [--source bridge\|external] [--min-areas N] [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
 | `discolab votes [--path PATH]` | Summarise the ticks and read the criterion |
@@ -211,36 +211,39 @@ The join is on the file path, and it must be normalised to NFC first: the filesy
 
 The tags are a curated taxonomy spanning style and region, so they filter far more sharply than Last.fm's. `Raw / Deep / Hypnotic`, `Peak Time / Driving`, `Minimal / Deep Tech`, `Hard Techno`, `Progressive Psy-Trance`, `Maghreb & Mashriq`, `Tuareg Desert Blues`, `Occitan & French Folk`. With BPM and key alongside them, a mix-oriented query is a filter rather than a guess.
 
-### Discogs
+### Deezer
 
 ```
-uv run discolab enrich --discogs --limit 1200
+uv run discolab enrich --deezer --min-agreement 0 --limit 6000 --workers 10
 ```
 
-Discogs supplies styles and label names, one request per artist, and writes them as properties rather than as graph nodes.
+Deezer supplies genres and label names, written as properties rather than as graph nodes.
 
 | Written | From |
 |---|---|
-| `Artist.discogs_styles` | the styles of the artist's releases |
-| `Artist.discogs_labels` | the label recurring across their releases |
-| `Artist.discogs_checked` | whether the artist has been asked about |
+| `Artist.styles` | the genres of the artist's albums |
+| `Artist.labels` | the label on those albums |
+| `Artist.enriched` | whether the artist has been asked about |
 
-It resumes: every artist asked about is marked, so the next run continues where the last stopped. Covering the whole graph is forty-eight minutes at Discogs' sixty requests a minute, so it runs in the background and the page build never waits on it. Enrichment is ordered by how many seeds agree on an artist, because only about 360 expansion artists carry two or more seeds and can reach a page at all.
+It resumes: every artist asked about is marked, so the next run continues where the last stopped. It is concurrent because Deezer allows it — measured 300 requests in 3.7 seconds with no rejection, where Discogs allows one a second and would need a hundred minutes for the same graph.
 
-A single search is one request per artist because asking for their releases returns the styles, genres and labels together, rather than a call per release.
+**The route matters more than the query.** `search/album` matches album *titles*, so it returns compilations and soundtracks that merely share a name: Rome resolved to a video-game score and Quelza to a Brazilian record. The correct route is `search/artist`, then that artist's own albums, then each album for its genres and label. That returns `Warp Records` for Squarepusher, `Dekmantel` for Polygonia and `MORD` for Quelza.
 
-**Labels are a property, not a graph.** Affinity through labels measured at zero: 1,770 distinct labels across 406 artists, not one holding two of the same collection's artists. A collection of one release per small label cannot express signing affinity, so a label expansion wrote 858 edges that surfaced Cliff Richard and Marillion, and the whole route was removed. The label name stays as one string on the page because it is the only curated human context there: `Ostgut Ton` says what Shed sounds like faster than any score.
+Deezer answers a near miss with a different artist, `Rome` resolving to `Romé`, so a result is rejected unless the name matches exactly.
 
-A search result's label field also carries pressing plants, rights societies and the occasional edition title, so `clean_labels` drops them. Printing "Sterling Sound" where a label belongs is worse than printing nothing.
+Genres are coarser than Discogs styles — `Electro`, `Techno/House`, `Dance` rather than `IDM` and `Breakbeat` — and they are right, which the coarse alternatives were not.
+
+**Labels are a property, not a graph.** Affinity through labels measured at zero: 1,770 distinct labels across 406 artists, not one holding two of the same collection's artists. A collection of one release per small label cannot express signing affinity. The label name stays as one string on the page because it is the only curated human context there: `Ostgut Ton` says what Shed sounds like faster than any score.
+
+`enrich` defaults to `--min-agreement 2`, asking only about artists two or more seeds agree on, because those are the only ones that can reach a page. `--min-agreement 0` walks everything.
 
 ## Known limits
 
 - Edges come only from title credits and shared containers. A library of single-artist albums produces almost none.
 - Container edges are ignored for containers holding fewer than 2 or more than 80 distinct artists, since the wide ones make everything co-occur.
 - Entity resolution is name-based. Aliases such as `Sterac aka Steve Rachmad` and `Sterac, Steve Rachmad` remain separate artists.
-- No play counts are read, so unplayed cannot yet be defined.
-- A verified channel that curates rather than releases is accepted when the title opens with the artist's name. Telling a label from a curator needs label data the graph does not hold yet.
-- Measured on a 1824 file library of loose tracks: 450 of 1225 artists connected, 775 isolated, 157 islands, largest island 24 artists.
+- A verified YouTube channel that curates rather than releases is accepted when the title opens with the artist's name.
+- Deezer genres are coarse. Fine styles such as `IDM` or `Breakbeat` are not available from any source that answers faster than sixty requests a minute.
 
 ## Exploring in Neo4j
 

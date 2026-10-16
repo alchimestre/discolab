@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import secrets
 import subprocess
@@ -28,7 +29,7 @@ from .config import Settings, load_env_file
 from .enrich import (
     DEFAULT_DB,
     MUSICBRAINZ_INTERVAL,
-    DiscogsEnricher,
+    DeezerEnricher,
     MusicBrainzEnricher,
     RekordboxEnricher,
     join_key,
@@ -394,13 +395,16 @@ def enrich(
         "--musicbrainz",
         help="Identify artists against MusicBrainz. One request a second, and it resumes.",
     ),
-    discogs: bool = typer.Option(
+    deezer: bool = typer.Option(
         False,
-        "--discogs",
-        help="Fetch styles and labels for artists. One request each, and it resumes.",
+        "--deezer",
+        help="Fetch genres and labels from Deezer. Fast, and it resumes.",
     ),
     external_only: bool = typer.Option(
-        False, "--external-only", help="Limit the Discogs pass to artists from expansion."
+        False, "--external-only", help="Limit the pass to artists from expansion."
+    ),
+    workers: int = typer.Option(
+        8, "--workers", help="Parallel requests. Deezer measured 300 in 3.7 seconds."
     ),
     keep_going: bool = typer.Option(
         False, "--keep-going", help="Repeat until every artist has been asked about."
@@ -426,72 +430,69 @@ def enrich(
     if musicbrainz:
         _identify_with_musicbrainz(settings, limit)
 
-    if discogs:
+    if deezer:
         if refresh:
             with store.connect(settings) as driver:
-                store.clear_discogs_flag(driver, settings.neo4j_database, external_only)
-        _enrich_artists_from_discogs(
-            settings, limit, external_only, keep_going, min_agreement
+                store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
+        _enrich_artists_with_deezer(
+            settings, limit, external_only, keep_going, min_agreement, workers
         )
 
 
-def _enrich_artists_from_discogs(
+def _enrich_artists_with_deezer(
     settings: Settings,
     limit: int,
     external_only: bool,
     keep_going: bool = False,
     min_agreement: int = 2,
+    workers: int = 8,
 ) -> None:
-    """Walk the artists Discogs has not been asked about, writing as it goes.
+    """Fill in genres and labels for artists nobody has asked about yet.
 
-    Nothing waits on this. It runs beside the page build, so a slow API costs
-    throughput rather than blocking anything.
+    Concurrent because Deezer allows it, where Discogs allows one request a
+    second and made the whole graph an hour of waiting.
     """
-    enricher = DiscogsEnricher(os.environ.get("DISCOGS_TOKEN", ""))
-    reason = enricher.unavailable_reason()
-    if reason:
-        typer.echo(reason, err=True)
-        raise typer.Exit(code=2)
-
+    enricher = DeezerEnricher()
     asked = 0
     answered = 0
     while True:
         with store.connect(settings) as driver:
-            pending = query.artists_needing_discogs(
+            pending = query.artists_needing_genres(
                 driver, settings.neo4j_database, limit, external_only, min_agreement
             )
         if not pending:
             break
 
-        typer.echo(f"asking Discogs about {len(pending)} artists")
+        typer.echo(f"asking Deezer about {len(pending)} artists, {workers} at a time")
         rows: list[dict] = []
-        for position, artist in enumerate(pending, start=1):
-            facts = enricher.facts(artist["name"])
-            if facts is None:
-                # Record the miss so the next pass does not ask again.
-                rows.append({"key": artist["key"], "styles": [], "labels": []})
-            else:
-                answered += 1
-                rows.append(
-                    {
-                        "key": artist["key"],
-                        "styles": list(facts.styles),
-                        "labels": list(facts.labels),
-                    }
-                )
-            asked += 1
-            if position % 50 == 0:
-                typer.echo(f"  asked {position}/{len(pending)}", err=True)
-                with store.connect(settings) as driver:
-                    load.write_artist_sources(driver, settings.neo4j_database, rows)
-                rows = []
+        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+            results = pool.map(lambda entry: enricher.facts(entry["name"]), pending)
+            for artist, facts in zip(pending, results):
+                asked += 1
+                if facts is None:
+                    # Record the miss so the next pass does not ask again.
+                    rows.append({"key": artist["key"], "styles": [], "labels": []})
+                else:
+                    answered += 1
+                    rows.append(
+                        {
+                            "key": artist["key"],
+                            "styles": list(facts.genres),
+                            "labels": list(facts.labels),
+                        }
+                    )
+                if len(rows) >= 300:
+                    with store.connect(settings) as driver:
+                        load.write_artist_genres(driver, settings.neo4j_database, rows)
+                    rows = []
+                    typer.echo(f"  asked {asked}, answered {answered}", err=True)
         if rows:
             with store.connect(settings) as driver:
-                load.write_artist_sources(driver, settings.neo4j_database, rows)
+                load.write_artist_genres(driver, settings.neo4j_database, rows)
         if not keep_going:
             break
 
-    typer.echo(f"Discogs asked about {asked}, answered for {answered}")
+    typer.echo(f"Deezer asked about {asked}, answered for {answered}")
 
 
 def _enrich_from_rekordbox(settings: Settings, rekordbox: Path) -> None:
@@ -578,27 +579,6 @@ def _identify_with_musicbrainz(settings: Settings, limit: int) -> None:
         for entry in duplicates[:8]:
             names = ", ".join(node["name"] for node in entry["nodes"])
             typer.echo(f"  {names[:78]}")
-
-
-# What "electronic" means when it is asked for by name, across Last.fm tags,
-# Discogs styles and the rekordbox My Tags in use.
-ELECTRONIC_TAGS = (
-    "electronic,electronica,techno,house,psytrance,downtempo,idm,trance,ambient,"
-    "minimal,electro,breakbeat,drum n bass,dub techno,acid,ebm,industrial,gabber,"
-    "hardcore,rave,progressive trance,tech house,deep house,minimal techno,"
-    "raw / deep / hypnotic,peak time / driving,nocturnal / afterhours,hard techno,"
-    "minimal / deep tech,melodic house & techno,progressive psy-trance,detroit / deep"
-)
-
-
-def _genre_terms(genre: str) -> tuple[str, ...]:
-    """Turn the genre string into terms, expanding the shorthand names."""
-    text = genre.strip()
-    if not text:
-        return ()
-    if text.casefold() == "electronic":
-        text = ELECTRONIC_TAGS
-    return tuple(tag.strip().casefold() for tag in text.split(",") if tag.strip())
 
 
 @app.command()
@@ -714,40 +694,6 @@ def prune(
         removed = store.delete_orphans(driver, database)
     for label, count in removed.items():
         typer.echo(f"removed {count} {label}")
-
-
-def _enrich_candidates_from_discogs(driver, database: str, keys: list[str]) -> None:
-    """Ask Discogs only about the artists about to be shown.
-
-    Covering the whole graph costs half an hour at one request a second, which
-    is the same rate MusicBrainz offers. The candidates are twenty-five names,
-    so the same enrichment is half a minute when it is asked for here.
-    """
-    missing = query.artists_without_discogs(driver, database, keys)
-    if not missing:
-        return
-    enricher = DiscogsEnricher(os.environ.get("DISCOGS_TOKEN", ""))
-    reason = enricher.unavailable_reason()
-    if reason:
-        typer.echo(reason, err=True)
-        return
-
-    typer.echo(f"asking Discogs about {len(missing)} artists")
-    rows = []
-    for position, artist in enumerate(missing, start=1):
-        facts = enricher.facts(artist["name"])
-        if facts is not None:
-            rows.append(
-                {
-                    "key": artist["key"],
-                    "styles": list(facts.styles),
-                    "labels": list(facts.labels),
-                }
-            )
-        if position % 10 == 0:
-            typer.echo(f"  asked {position}/{len(missing)}", err=True)
-    load.write_artist_sources(driver, database, rows)
-    typer.echo(f"Discogs answered for {len(rows)} of {len(missing)}")
 
 
 def _explain_empty(driver, database: str) -> None:
@@ -885,13 +831,8 @@ def check(
     genre: str = typer.Option(
         "",
         "--genre",
-        help="Only count agreement from seeds tagged with one of these, comma separated. "
-        "Applies to the ranking, not just to which seeds were expanded from.",
-    ),
-    discogs: bool = typer.Option(
-        True,
-        "--discogs/--no-discogs",
-        help="Ask Discogs about the candidates for styles and labels. One request each.",
+        help="Deprecated. Narrowing is done with --cluster instead.",
+        hidden=True,
     ),
     cluster: int = typer.Option(
         -1,
@@ -924,13 +865,7 @@ def check(
             rows = query.cluster_frontier(driver, database, cluster, limit)
             source = "external"
         elif source == "external":
-            wanted = _genre_terms(genre)
-            # Nothing here waits on a network call. Genre filtering reads what
-            # the background enrichment has already written, and the enrichment
-            # below only fills in the handful of artists actually shown.
-            rows = query.external_candidates(
-                driver, database, limit, min_areas, wanted
-            )
+            rows = query.external_candidates(driver, database, limit, min_areas)
         else:
             rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
         if not rows:
@@ -945,8 +880,6 @@ def check(
             else {}
         )
         titles = query.library_titles(driver, database)
-        if discogs:
-            _enrich_candidates_from_discogs(driver, database, keys)
         sources = query.artist_sources(driver, database, keys)
         tempo = query.artist_tempo(driver, database, keys)
 
