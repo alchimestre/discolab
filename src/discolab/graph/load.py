@@ -48,6 +48,26 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
+def write_label_mates(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Attach artists found on a label, marking only genuinely new ones external."""
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (l:Label {key: row.label_key})
+            MERGE (a:Artist {key: row.key})
+            SET a.name = coalesce(a.name, row.name),
+                a.external = coalesce(a.external, row.external)
+            MERGE (l)-[:HAS_ARTIST]->(a)
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    return len(rows)
+
+
 def write_artist_sources(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach Discogs styles and labels, and note that the artist was asked about."""
     if not rows:

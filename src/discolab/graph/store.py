@@ -22,5 +22,19 @@ def ensure_schema(driver: Driver, database: str) -> None:
         )
 
 
+def clear_discogs_flag(driver: Driver, database: str, external_only: bool) -> int:
+    """Forget that Discogs was consulted, so it is consulted again."""
+    clause = "AND coalesce(a.external, false) = true" if external_only else ""
+    result = driver.execute_query(
+        f"""
+        MATCH (a:Artist) WHERE coalesce(a.discogs_checked, false) = true {clause}
+        SET a.discogs_checked = false
+        RETURN count(a) AS cleared
+        """,
+        database_=database,
+    )
+    return result.records[0]["cleared"]
+
+
 def clear(driver: Driver, database: str) -> None:
     driver.execute_query("MATCH (n) DETACH DELETE n", database_=database)

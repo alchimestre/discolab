@@ -28,8 +28,10 @@ from .enrich import (
     DEFAULT_DB,
     MUSICBRAINZ_INTERVAL,
     DiscogsEnricher,
+    DiscogsLabelExpander,
     MusicBrainzEnricher,
     RekordboxEnricher,
+    is_real_label,
     join_key,
 )
 from .expand import LastfmSimilarExpander
@@ -302,9 +304,21 @@ def expand(
     min_score: float = typer.Option(
         0.0, "--min-score", help="Ignore matches weaker than this."
     ),
+    by: str = typer.Option(
+        "similar", "--by", help="similar expands through Last.fm; labels through Discogs."
+    ),
+    labels: int = typer.Option(
+        40, "--labels", help="Labels to expand through when --by labels."
+    ),
+    min_label_artists: int = typer.Option(
+        1, "--min-label-artists", help="Only labels already holding this many artists."
+    ),
 ) -> None:
-    """Expand from the centre of each taste cluster to artists you do not have."""
+    """Expand beyond your own music, by similarity or through labels."""
     settings = _settings([])
+    if by == "labels":
+        _expand_through_labels(settings, labels, min_label_artists)
+        return
     if not settings.lastfm_api_key:
         typer.echo("set LASTFM_API_KEY in .env", err=True)
         raise typer.Exit(code=2)
@@ -404,6 +418,9 @@ def enrich(
     keep_going: bool = typer.Option(
         False, "--keep-going", help="Repeat until every artist has been asked about."
     ),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Ask again about artists already done. Fixes stored noise."
+    ),
     limit: int = typer.Option(
         200, "--limit", help="Artists to identify in this run; the next run continues."
     ),
@@ -418,6 +435,9 @@ def enrich(
         _identify_with_musicbrainz(settings, limit)
 
     if discogs:
+        if refresh:
+            with store.connect(settings) as driver:
+                store.clear_discogs_flag(driver, settings.neo4j_database, external_only)
         _enrich_artists_from_discogs(settings, limit, external_only, keep_going)
 
 
@@ -581,6 +601,71 @@ def _genre_terms(genre: str) -> tuple[str, ...]:
     if text.casefold() == "electronic":
         text = ELECTRONIC_TAGS
     return tuple(tag.strip().casefold() for tag in text.split(",") if tag.strip())
+
+
+def _expand_through_labels(settings: Settings, limit: int, min_artists: int) -> None:
+    """Find other artists on labels the collection already holds.
+
+    A label is a deliberate curation, so its roster is a structural neighbour
+    rather than a guess about who else gets listened to.
+    """
+    expander = DiscogsLabelExpander(os.environ.get("DISCOGS_TOKEN", ""))
+    reason = expander.unavailable_reason()
+    if reason:
+        typer.echo(reason, err=True)
+        raise typer.Exit(code=2)
+
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        candidates = [
+            label
+            for label in query.labels_to_expand(driver, database, min_artists, limit * 2)
+            if is_real_label(label["key"])
+        ][:limit]
+        known = set(query.corpus_keys(driver, database))
+    if not candidates:
+        typer.echo("no labels yet: run `discolab enrich --discogs` first", err=True)
+        raise typer.Exit(code=2)
+
+    typer.echo(f"checking whether {len(candidates)} names are labels")
+    targets = []
+    for position, label in enumerate(candidates, start=1):
+        if expander.is_label_entity(label["key"]):
+            targets.append(label)
+        if position % 10 == 0:
+            typer.echo(f"  checked {position}/{len(candidates)}", err=True)
+    typer.echo(f"{len(targets)} of {len(candidates)} are labels")
+
+    typer.echo(f"expanding through {len(targets)} labels")
+    seen: dict[tuple[str, str], dict] = {}
+    crediting = 0
+    new_artists = 0
+    for position, label in enumerate(targets, start=1):
+        for artist, _release in expander.artists_on(label["key"]):
+            crediting += 1
+            key = normalise(artist)
+            if not key:
+                continue
+            corpus = key in known
+            pair = (label["key"], key)
+            if pair in seen:
+                continue
+            if not corpus:
+                new_artists += 1
+            seen[pair] = {
+                "label_key": label["key"],
+                "key": key,
+                "name": artist,
+                "external": not corpus,
+            }
+        if position % 10 == 0:
+            typer.echo(f"  {position}/{len(targets)}", err=True)
+
+    with store.connect(settings) as driver:
+        load.write_label_mates(driver, settings.neo4j_database, list(seen.values()))
+    typer.echo(f"credits seen: {crediting}")
+    typer.echo(f"label and artist pairs written: {len(seen)}")
+    typer.echo(f"artists not in your collection: {new_artists}")
 
 
 def _enrich_candidates_from_discogs(driver, database: str, keys: list[str]) -> None:
@@ -781,6 +866,9 @@ def check(
             rows = query.external_candidates(
                 driver, database, limit, min_areas, wanted
             )
+        elif source == "labels":
+            wanted = _genre_terms(genre)
+            rows = query.label_candidates(driver, database, limit, wanted)
         else:
             rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
         if not rows:
@@ -798,6 +886,7 @@ def check(
         if discogs:
             _enrich_candidates_from_discogs(driver, database, keys)
         sources = query.artist_sources(driver, database, keys)
+        tempo = query.artist_tempo(driver, database, keys)
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
@@ -829,12 +918,16 @@ def check(
             known_titles=tuple(
                 (track["title"], track["plays"]) for track in owned.get(row["key"], [])
             ),
-            seeds=tuple(row.get("seed_names", ())),
-            external=source == "external",
-            seed_count=row.get("seed_count", 0),
+            seeds=tuple(row.get("seed_names") or row.get("via") or ()),
+            external=source in ("external", "labels"),
+            source_kind=source,
+            seed_count=row.get("seed_count", row.get("labels", 0)),
             areas=row.get("areas", 0),
             styles=tuple(sources.get(row["key"], {}).get("styles", ())),
             labels=tuple(sources.get(row["key"], {}).get("labels", ())),
+            bpm_low=tempo.get(row["key"], {}).get("low"),
+            bpm_high=tempo.get(row["key"], {}).get("high"),
+            musical_keys=tuple(tempo.get(row["key"], {}).get("musical_keys") or ()),
         )
         for row in rows
     ]

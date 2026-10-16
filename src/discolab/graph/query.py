@@ -165,6 +165,75 @@ def artist_sources(
     return {record["key"]: dict(record) for record in records}
 
 
+def labels_to_expand(
+    driver: Driver, database: str, min_artists: int = 1, limit: int = 40
+) -> list[dict]:
+    """Labels already represented in the collection, richest first."""
+    records = driver.execute_query(
+        """
+        MATCH (l:Label)<-[:ON_LABEL]-(a:Artist)
+        WITH l, count(DISTINCT a) AS artists
+        WHERE artists >= $min_artists
+        RETURN l.key AS key, artists
+        ORDER BY artists DESC, l.key
+        LIMIT $limit
+        """,
+        min_artists=min_artists,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
+def label_candidates(
+    driver: Driver, database: str, limit: int = 25, tags: Sequence[str] = ()
+) -> list[dict]:
+    """Artists found through a label rather than through similarity."""
+    records = driver.execute_query(
+        """
+        MATCH (l:Label)-[:HAS_ARTIST]->(e:Artist)
+        WHERE coalesce(e.external, false) = true
+          AND ($tags = [] OR $tags IS NULL
+               OR (size(coalesce(e.discogs_styles, [])) = 0
+                   AND size(coalesce(e.tags, [])) = 0
+                   AND NOT EXISTS { MATCH (e)-[:TAGGED]->(:Tag) })
+               OR any(t IN coalesce(e.discogs_styles, []) WHERE toLower(t) IN $tags)
+               OR any(t IN coalesce(e.tags, []) WHERE t IN $tags)
+               OR EXISTS {
+                    MATCH (e)-[:TAGGED]->(eg:Tag) WHERE toLower(eg.key) IN $tags
+                  })
+        WITH e, count(DISTINCT l) AS labels, collect(DISTINCT l.key)[0..3] AS via
+        RETURN e.key AS key, e.name AS name, labels, via
+        ORDER BY labels DESC, e.name
+        LIMIT $limit
+        """,
+        tags=list(tags),
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
+def artist_tempo(
+    driver: Driver, database: str, keys: Sequence[str]
+) -> dict[str, dict]:
+    """Tempo range and keys per artist, from the tracks the library holds."""
+    records = driver.execute_query(
+        """
+        UNWIND $keys AS key
+        MATCH (a:Artist {key: key})<-[:BY]-(t:Track)
+        WHERE t.bpm IS NOT NULL
+        WITH key, count(t) AS tracks, min(t.bpm) AS low, max(t.bpm) AS high,
+             avg(t.bpm) AS mean,
+             [k IN collect(DISTINCT t.musical_key) WHERE k IS NOT NULL][0..4] AS musical_keys
+        RETURN key, tracks, low, high, mean, musical_keys
+        """,
+        keys=list(keys),
+        database_=database,
+    ).records
+    return {record["key"]: dict(record) for record in records}
+
+
 def artists_needing_discogs(
     driver: Driver, database: str, limit: int, external_only: bool = False
 ) -> list[dict]:

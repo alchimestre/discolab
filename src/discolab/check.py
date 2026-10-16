@@ -91,10 +91,14 @@ class Candidate:
     known_titles: tuple[tuple[str, int], ...] = ()
     seeds: tuple[str, ...] = ()
     external: bool = False
+    source_kind: str = "bridge"
     seed_count: int = 0
     areas: int = 0
     styles: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
+    bpm_low: float | None = None
+    bpm_high: float | None = None
+    musical_keys: tuple[str, ...] = ()
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -565,7 +569,13 @@ def build_page(
 
 def _provenance(candidate: Candidate) -> str:
     """Say where the artist came from, since the two sources mean different things."""
-    if candidate.external:
+    if candidate.source_kind == "labels":
+        via = ", ".join(candidate.seeds[:3]) or "unknown label"
+        header = (
+            f"not in your library · on {candidate.seed_count} of your labels "
+            f"· {html.escape(via)}"
+        )
+    elif candidate.external:
         via = ", ".join(candidate.seeds[:3]) or "unknown seed"
         header = (
             f"not in your library · {candidate.seed_count} seed(s) across "
@@ -580,6 +590,10 @@ def _provenance(candidate: Candidate) -> str:
         header += f" · {html.escape(', '.join(candidate.styles[:4]))}"
     if candidate.labels:
         header += f" · on {html.escape(', '.join(candidate.labels[:2]))}"
+    if candidate.bpm_low is not None and candidate.bpm_high is not None:
+        header += f" · {candidate.bpm_low:.0f}-{candidate.bpm_high:.0f} bpm"
+    if candidate.musical_keys:
+        header += f" · {' '.join(html.escape(k) for k in candidate.musical_keys[:4])}"
     return header
 
 
