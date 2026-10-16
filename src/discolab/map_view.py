@@ -24,6 +24,88 @@ ITERATIONS = 500
 SEED = 7
 PANEL_SUGGESTIONS = 14
 
+# Deezer answers in French with sixty-odd labels, several of which mean one thing
+# to a listener: Electro, Dance, Techno/House and Trance are one family. Naming a
+# cluster after its top raw label spends sixty names on six ideas, so the labels
+# are folded into families first, and the family is what names and colours the
+# bubble. Raw labels stay in the panel, where there is room for them.
+FAMILY_EXACT = {
+    "electro pop/electro rock": "Electronic",
+    "pop indé/folk": "Pop",
+    "rock indé/pop rock": "Rock",
+    "rock indé": "Rock",
+    "electro hip-hop": "Hip hop & Soul",
+    "variété internationale": "Pop",
+    "pop internationale": "Pop",
+    "chanson française": "Pop",
+    "rap français": "Hip hop & Soul",
+    "singer & songwriter": "Folk & World",
+    "soul & funk": "Hip hop & Soul",
+    "soul contemporaine": "Hip hop & Soul",
+    "musique africaine": "Folk & World",
+    "musique arabe": "Folk & World",
+    "musique indienne": "Folk & World",
+    "musique brésilienne": "Folk & World",
+    "musiques de jeux vidéo": "Soundtrack",
+    "musiques de films": "Soundtrack",
+    "films/jeux vidéo": "Soundtrack",
+    "bandes originales": "Soundtrack",
+    "bo tv": "Soundtrack",
+    "période classique": "Classical",
+    "chicago blues": "Jazz & Blues",
+    "blues électrique": "Jazz & Blues",
+    "rock & roll/rockabilly": "Rock",
+    "rock français": "Rock",
+    "hard rock": "Rock",
+    "dancehall/ragga": "Hip hop & Soul",
+    "comptines/chansons": "Pop",
+    "jeunesse": "Pop",
+    "livres audio": "Soundtrack",
+    "comédie": "Soundtrack",
+    "médiéval": "Classical",
+    "renaissance": "Classical",
+    "baroque": "Classical",
+    "opéra": "Classical",
+}
+
+FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Hip hop & Soul", ("rap", "hip hop", "r&b", "rnb", "soul", "funk", "grime",
+                        "dancehall", "ragga")),
+    ("Classical", ("classique", "baroque", "opéra", "renaissance", "médiéval")),
+    ("Soundtrack", ("films", "bandes originales", "jeux vidéo", "comédie",
+                    "livres audio")),
+    ("Jazz & Blues", ("jazz", "blues")),
+    ("Pop", ("pop", "variété", "chanson", "jeunesse", "comptines")),
+    ("Electronic", ("electro", "techno", "house", "dance", "trance", "disco",
+                    "dubstep", "electro", "club", "edm", "dub")),
+    ("Rock", ("rock", "metal", "alternative", "indie", "indé", "punk")),
+    ("Folk & World", ("folk", "country", "singer", "latino", "africaine", "arabe",
+                      "indienne", "brésilienne", "bollywood", "reggae", "world")),
+)
+
+FAMILY_COLOUR = {
+    "Electronic": "#4d8df6",
+    "Hip hop & Soul": "#f2872f",
+    "Rock": "#e2574c",
+    "Pop": "#dd5fae",
+    "Jazz & Blues": "#d4a11c",
+    "Classical": "#9b7bd4",
+    "Folk & World": "#35a56a",
+    "Soundtrack": "#33a3bb",
+    "Other": "#8a8f98",
+}
+
+
+def family_of(genre: str) -> str:
+    """Fold one raw label into a family."""
+    key = genre.casefold().strip()
+    if key in FAMILY_EXACT:
+        return FAMILY_EXACT[key]
+    for family, needles in FAMILY_RULES:
+        if any(needle in key for needle in needles):
+            return family
+    return "Other"
+
 
 @dataclass
 class Cluster:
@@ -32,6 +114,7 @@ class Cluster:
     corpus: int
     tagged: int = 0
     genres: tuple[tuple[str, int], ...] = ()
+    tags: tuple[str, ...] = ()
     artists: tuple[str, ...] = ()
     x: float = 0.0
     y: float = 0.0
@@ -39,25 +122,50 @@ class Cluster:
     suggestions: list[dict] = field(default_factory=list)
 
     @property
-    def label(self) -> str:
-        """A genre name, but only where the cluster actually has one.
+    def families(self) -> tuple[tuple[str, int], ...]:
+        """Genre families by weight, heaviest first."""
+        totals: dict[str, int] = {}
+        for name, count in self.genres:
+            family = family_of(name)
+            totals[family] = totals.get(family, 0) + count
+        return tuple(sorted(totals.items(), key=lambda item: (-item[1], item[0])))
 
-        The largest cluster holds 16% of the graph across 42 genres, its top one
-        covering 27% of its tagged artists. Naming it after that genre would be
-        an invention the map states as fact, so it says mixed instead.
+    @property
+    def family(self) -> str:
+        found = self.families
+        return found[0][0] if found else "Other"
+
+    @property
+    def colour(self) -> str:
+        return FAMILY_COLOUR.get(self.family, FAMILY_COLOUR["Other"])
+
+    @property
+    def label(self) -> str:
+        """What this cluster is, in as few words as the evidence supports.
+
+        One family carrying most of the genre evidence names it. Two families
+        splitting it name both, which informs rather than shrugs. Fragmented
+        across several says mixed. Eight tagged artists is the floor, because
+        below that there is nothing to name it from.
         """
-        if not self.genres:
-            return f"cluster {self.key}"
-        # A name needs enough tagged artists behind it to mean anything, but not
-        # a fraction of the whole cluster: only six per cent of artists are
-        # tagged at all, so a coverage threshold would name nothing. Eight is a
-        # floor on the evidence, and the panel states the sample it came from.
         if self.tagged < 8:
             return f"cluster {self.key}"
-        name, count = self.genres[0]
-        if count >= self.tagged * 0.5:
-            return name
+        found = self.families
+        if not found:
+            return f"cluster {self.key}"
+        total = sum(count for _, count in self.genres) or 1
+        top, count = found[0]
+        share = count / total
+        if share >= 0.55:
+            return top
+        if share >= 0.30 and len(found) > 1:
+            return f"{top} / {found[1][0]}"
         return "mixed"
+
+    @property
+    def sub_genre(self) -> str | None:
+        """The owner's own label, when the tags agree on one for this cluster."""
+        return self.tags[0] if self.tags else None
 
 
 def radius_for(size: int, largest: int) -> float:
@@ -161,6 +269,17 @@ def layout(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> None:
             break
 
 
+def _short(label: str, limit: int = 26) -> str:
+    """Trim to a word boundary, so a bubble never reads like a typo."""
+    if len(label) <= limit:
+        return label
+    cut = label[:limit]
+    space = cut.rfind(" ")
+    if space > 8:
+        cut = cut[:space]
+    return cut.rstrip(" /&") + "…"
+
+
 def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> str:
     at = {cluster.key: cluster for cluster in clusters}
     heaviest = max((weight for _, _, weight in edges), default=1)
@@ -196,15 +315,17 @@ def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> 
             f'<text x="{cluster.x:.1f}" y="{cluster.y:.1f}" text-anchor="middle" '
             f'dominant-baseline="central" '
             f'font-size="{max(11.0, min(18.0, cluster.r * 0.40)):.0f}">'
-            f"{html.escape(label[:20])}</text>"
+            f"{html.escape(_short(label))}</text>"
             if show
             else ""
         )
         bubbles.append(
-            f'<g class="bubble" data-key="{cluster.key}" tabindex="0" role="button" '
+            f'<g class="bubble" data-key="{cluster.key}" '
+            f'data-family="{html.escape(cluster.family)}" tabindex="0" role="button" '
             f'aria-label="{html.escape(title)}">'
             f"<title>{html.escape(title)}</title>"
-            f'<circle cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" r="{cluster.r:.1f}"/>'
+            f'<circle cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" r="{cluster.r:.1f}" '
+            f'fill="{cluster.colour}" fill-opacity="0.18" stroke="{cluster.colour}"/>'
             f"{text}</g>"
         )
 
@@ -235,6 +356,9 @@ def _payload(clusters: list[Cluster]) -> str:
                     "corpus": cluster.corpus,
                     "tagged": cluster.tagged,
                     "label": cluster.label,
+                    "family": cluster.family,
+                    "colour": cluster.colour,
+                    "sub_genre": cluster.sub_genre,
                     "genres": [{"name": name, "n": n} for name, n in cluster.genres],
                     "artists": list(cluster.artists),
                     "suggestions": cluster.suggestions,
@@ -270,24 +394,32 @@ PAGE = """<!doctype html>
   #graph { flex: 1; min-height: 0; padding: 8px; }
   svg#map { width: 100%; height: 100%; display: block; }
   .edge { stroke: currentColor; color: var(--ink); }
-  .bubble circle { fill: var(--fill); stroke: var(--line); stroke-width: 1; cursor: pointer; }
-  .bubble text { fill: var(--ink); pointer-events: none; opacity: .82; }
-  .bubble:hover circle, .bubble:focus-visible circle { stroke: var(--hot); stroke-width: 2; }
+  .bubble circle { stroke-width: 1.2; cursor: pointer; transition: fill-opacity .12s; }
+  .bubble text { fill: var(--ink); pointer-events: none; opacity: .9; }
+  .bubble:hover circle, .bubble:focus-visible circle { stroke-width: 2.6; fill-opacity: .38; }
   .bubble:hover text, .bubble:focus-visible text { opacity: 1; }
-  .bubble.active circle { fill: color-mix(in srgb, CanvasText 24%, transparent);
-                          stroke: var(--hot); stroke-width: 2.5; }
-  .bubble.dimmed { opacity: .22; }
+  .bubble.active circle { stroke-width: 3.2; fill-opacity: .52; }
+  .bubble.dimmed { opacity: .2; }
   .bubble:focus { outline: none; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
   aside { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 40px; }
+  #legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 14px;
+            font-size: 11px; color: var(--quiet); }
+  #legend span { display: inline-flex; align-items: center; gap: 4px; }
+  #legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   #scope h2 { font-size: 17px; margin: 0 0 2px; }
   #scope .meta { font-size: 12px; color: var(--quiet); margin-bottom: 10px; }
   #scope .genres { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
   #scope .genres span { font-size: 11px; padding: 1px 7px; border-radius: 9px;
                         border: 1px solid var(--line); color: var(--quiet); }
+  #scope .own-tag { font-size: 12px; margin: 0 0 12px; }
   #scope .in-cluster { font-size: 12px; color: var(--quiet); margin-bottom: 14px; }
-  ol.suggestions { list-style: none; margin: 0; padding: 0; counter-reset: s; }
+  #scope .picked { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+  #scope .picked button { font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer;
+                          border-radius: 9px; border: 1px solid var(--line);
+                          background: transparent; color: var(--ink); }
+  ol.suggestions { list-style: none; margin: 0; padding: 0; }
   ol.suggestions li { padding: 9px 0; border-top: 1px solid var(--line); }
   ol.suggestions .name { font-weight: 600; }
   ol.suggestions .why { font-size: 12px; color: var(--quiet); }
@@ -310,9 +442,10 @@ PAGE = """<!doctype html>
 </div>
 
 <aside>
+  <div id="legend"></div>
   <div id="scope">
     <h2>Pick a cluster</h2>
-    <p class="meta">Bubbles are groups of artists that occur together. Size is how many artists the group holds.</p>
+    <p class="meta">Bubbles are groups of artists that occur together. Size is how many artists the group holds. Click several to combine them.</p>
     <p class="empty">Nothing selected yet.</p>
   </div>
 </aside>
@@ -324,7 +457,7 @@ const bubbles = [...document.querySelectorAll('.bubble')];
 const edges = [...document.querySelectorAll('.edge')];
 const scope = document.getElementById('scope');
 const tip = document.getElementById('tip');
-let locked = null;
+const picked = new Set();
 
 document.getElementById('stat').textContent =
   DATA.clusters.length + ' clusters · ' +
@@ -333,71 +466,124 @@ document.getElementById('stat').textContent =
 function esc(s) { return String(s).replace(/[&<>"]/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-function emphasise(key) {
+function colourOf(family) {
+  const hit = DATA.clusters.find(c => c.family === family);
+  return hit ? hit.colour : '#8a8f98';
+}
+
+// Colour is the genre family, so the legend is the map's key: two bubbles in the
+// same colour hold the same broad kind of music, wherever they sit.
+(function buildLegend() {
+  const counts = new Map();
+  for (const c of DATA.clusters) counts.set(c.family, (counts.get(c.family) || 0) + 1);
+  document.getElementById('legend').innerHTML = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([family, n]) => '<span><i style="background:' + colourOf(family) + '"></i>' +
+      esc(family) + ' ' + n + '</span>').join('');
+})();
+
+function emphasise() {
+  const any = picked.size > 0;
   for (const b of bubbles) {
-    const same = b.dataset.key === String(key);
-    b.classList.toggle('dimmed', key !== null && !same);
+    const on = picked.has(Number(b.dataset.key));
+    b.classList.toggle('active', on);
+    b.classList.toggle('dimmed', any && !on);
   }
   for (const e of edges) {
-    const on = key === null || e.dataset.a === String(key) || e.dataset.b === String(key);
+    const on = !any || picked.has(Number(e.dataset.a)) || picked.has(Number(e.dataset.b));
     e.style.strokeOpacity = on ? '' : '0.02';
   }
 }
 
-function render(key) {
-  const c = byKey.get(key);
-  if (!c) return;
-  const genres = c.genres.length
-    ? c.genres.map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('') +
-      '<span>' + c.tagged + ' of ' + c.size.toLocaleString() + ' tagged</span>'
-    : '<span>nothing recorded for this group yet</span>';
-  const inside = c.artists.length
-    ? '<div class="in-cluster">Already yours: ' + c.artists.map(esc).join(', ') + '</div>'
-    : '';
-  const list = c.suggestions.length
-    ? '<ol class="suggestions">' + c.suggestions.map(s => {
+// One list for however many clusters are on. A suggestion several of them point
+// at moves up, which is the agreement rule the rest of the project runs on.
+function combined() {
+  const totals = new Map();
+  for (const key of picked) {
+    const c = byKey.get(key);
+    if (!c) continue;
+    for (const s of c.suggestions) {
+      const row = totals.get(s.name) ||
+        { name: s.name, agreement: 0, styles: s.styles, via: s.via, from: [] };
+      row.agreement += s.agreement;
+      if (!row.from.includes(c.label)) row.from.push(c.label);
+      totals.set(s.name, row);
+    }
+  }
+  return [...totals.values()].sort((a, b) => b.agreement - a.agreement).slice(0, 24);
+}
+
+function renderPanel() {
+  if (!picked.size) {
+    scope.innerHTML = '<h2>Pick a cluster</h2>' +
+      '<p class="meta">Bubbles are groups of artists that occur together, coloured by ' +
+      'genre family. Click one, or several, to see what they point at.</p>';
+    return;
+  }
+  const chosen = [...picked].map(k => byKey.get(k)).filter(Boolean);
+  let head;
+  if (chosen.length === 1) {
+    const c = chosen[0];
+    const genres = c.genres.length
+      ? c.genres.slice(0, 5).map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('') +
+        '<span>' + c.tagged + ' of ' + c.size.toLocaleString() + ' tagged</span>'
+      : '<span>no genres recorded yet</span>';
+    head = '<h2 style="color:' + c.colour + '">' + esc(c.label) + '</h2>' +
+      '<p class="meta">' + c.size.toLocaleString() + ' artists · ' +
+      c.corpus.toLocaleString() + ' of them yours · cluster ' + c.key + ' · ' +
+      esc(c.family) + '</p>' +
+      (c.sub_genre ? '<p class="own-tag">Your own tag for it: <strong>' +
+        esc(c.sub_genre) + '</strong></p>' : '') +
+      '<div class="genres">' + genres + '</div>';
+  } else {
+    const size = chosen.reduce((n, c) => n + c.size, 0);
+    const yours = chosen.reduce((n, c) => n + c.corpus, 0);
+    head = '<h2>' + chosen.length + ' clusters combined</h2>' +
+      '<p class="meta">' + size.toLocaleString() + ' artists · ' +
+      yours.toLocaleString() + ' of them yours</p>';
+  }
+  const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
+    esc(c.label) + ' ×</button>').join('');
+  const rows = combined();
+  const body = rows.length
+    ? '<ol class="suggestions">' + rows.map(s => {
         const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
         return '<li><div class="name">' + esc(s.name) + '</div>' +
-          '<div class="why">' + s.agreement + ' artist' + (s.agreement === 1 ? '' : 's') +
-          ' in this group point at it' +
-          (s.via ? ' · ' + esc(s.via) : '') + '</div>' +
+          '<div class="why">' + s.agreement + ' pointing artists across ' +
+          s.from.map(esc).join(', ') + (s.via ? ' · ' + esc(s.via) : '') + '</div>' +
           (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
       }).join('') + '</ol>'
-    : '<p class="empty">Nothing reaches this group yet. Expanding from it would find candidates.</p>';
-  scope.innerHTML =
-    '<h2>' + esc(c.label) + '</h2>' +
-    '<p class="meta">' + c.size.toLocaleString() + ' artists · ' +
-    c.corpus.toLocaleString() + ' of them yours · cluster ' + c.key + '</p>' +
-    '<div class="genres">' + genres + '</div>' + inside + list;
+    : '<p class="empty">Nothing reaches these clusters yet.</p>';
+  scope.innerHTML = head + '<div class="picked">' + chips + '</div>' + body;
+  for (const button of scope.querySelectorAll('[data-drop]')) {
+    button.addEventListener('click', () => {
+      picked.delete(Number(button.dataset.drop));
+      emphasise();
+      renderPanel();
+    });
+  }
 }
 
 for (const b of bubbles) {
   const key = Number(b.dataset.key);
-  // Hovering inspects, clicking scopes, and the two are separate: the list stays
-  // on the cluster chosen while the pointer moves over the rest. Returning early
-  // on a lock made every other cluster unreadable once one was picked.
+  // Hovering inspects and clicking picks, and the two are separate: the list
+  // stays on what was picked while the pointer reads the rest. Returning early
+  // on a pick made every other cluster unreadable.
   b.addEventListener('mouseenter', () => {
-    emphasise(key);
     const c = byKey.get(key);
-    tip.textContent = c.label + ' · ' + c.size.toLocaleString() + ' artists';
+    tip.textContent = c.label + ' · ' + c.size.toLocaleString() + ' artists · ' + c.family;
   });
   b.addEventListener('focus', () => b.dispatchEvent(new Event('mouseenter')));
-  b.addEventListener('mouseleave', () => {
-    emphasise(locked);
-    tip.textContent = '';
-  });
+  b.addEventListener('mouseleave', () => { tip.textContent = ''; });
   b.addEventListener('click', () => {
-    locked = locked === key ? null : key;
-    for (const other of bubbles) {
-      other.classList.toggle('active', Number(other.dataset.key) === locked);
-    }
-    emphasise(locked);
-    render(locked ?? biggest);
+    if (picked.has(key)) picked.delete(key); else picked.add(key);
+    emphasise();
+    renderPanel();
   });
 }
 
-const biggest = DATA.clusters.slice().sort((a, b) => b.size - a.size)[0].key;
-render(biggest);
+emphasise();
+renderPanel();
 </script>
 </html>
 """

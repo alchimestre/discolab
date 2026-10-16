@@ -79,14 +79,15 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 | Element | Meaning |
 |---|---|
 | A bubble | One cluster, sized by how many artists it holds, placed so clusters that share artists settle near each other |
-| Its label | The cluster's genre, but only when one genre covers half its tagged artists. Otherwise it says `mixed` |
-| Hovering | Dims everything else, keeps that cluster's links lit, and names it in the toolbar |
-| Clicking | Scopes the right-hand list to that cluster, and clicking again releases it |
-| The list | Artists that cluster's members point at, most agreed on first, with how many pointed at them and which |
+| Its colour | The genre family, so two bubbles of a colour hold the same broad kind of music. The legend lists them with counts |
+| Its label | The family, or two when the cluster splits between them, or `mixed` when it fragments |
+| Hovering | Names what is under the pointer, and leaves the selection alone |
+| Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
+| The list | Artists the selected clusters point at, ranked by how many of their artists point at each, with which clusters did |
 
-A cluster is named only when the name is true. The largest holds 2,325 artists across 42 genres, its top one covering 27% of its tagged artists, so it says `mixed` rather than claiming to be Electro.
+Sixty-odd raw Deezer labels are folded into eight families before anything is named. Electro, Dance, Techno/House and Trance are one family, because naming a cluster after its top raw label spends sixty names on six ideas. The raw labels stay in the panel, where there is room for them.
 
-`enrich --per-cluster N` fills in the genres the map needs. Ranking by agreement cannot name a cluster: the artists that define one are the ones it is built around, not the ones most seeds point at.
+A cluster takes its family's name when one family carries most of its genre evidence, both names when two split it, and `mixed` when it fragments across several. `enrich --per-cluster N` is what gives the families something to work from: ranking by agreement cannot name a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
 
 ## Checking the candidates
 

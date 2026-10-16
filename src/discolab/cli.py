@@ -979,7 +979,16 @@ def map_page(
             """
             MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
             RETURN a.community AS key, count(*) AS size,
+                   sum(CASE WHEN size(coalesce(a.styles, [])) > 0 THEN 1 ELSE 0 END) AS tagged,
                    sum(CASE WHEN coalesce(a.external, false) THEN 0 ELSE 1 END) AS corpus
+            """,
+            database_=database,
+        ).records
+        own_tags = driver.execute_query(
+            """
+            MATCH (a:Artist)-[:TAGGED]->(g:Tag)
+            WHERE a.community IS NOT NULL AND a.community >= 0
+            RETURN a.community AS key, g.key AS tag, count(DISTINCT a) AS artists
             """,
             database_=database,
         ).records
@@ -1028,6 +1037,11 @@ def map_page(
         genres.setdefault(row["key"], {})
         genres[row["key"]][row["style"]] = genres[row["key"]].get(row["style"], 0) + 1
 
+    own_tags_by_cluster: dict[int, dict[str, int]] = {}
+    for row in own_tags:
+        own_tags_by_cluster.setdefault(row["key"], {})
+        own_tags_by_cluster[row["key"]][row["tag"]] = row["artists"]
+
     own: dict[int, list[tuple[int, int, str]]] = {}
     for row in named:
         own.setdefault(row["key"], []).append(
@@ -1054,9 +1068,16 @@ def map_page(
                 sorted(
                     genres.get(row["key"], {}).items(),
                     key=lambda item: (-item[1], item[0]),
+                )
+            ),
+            tagged=row["tagged"],
+            tags=tuple(
+                tag
+                for tag, _ in sorted(
+                    own_tags_by_cluster.get(row["key"], {}).items(),
+                    key=lambda item: (-item[1], item[0]),
                 )[:3]
             ),
-            tagged=sum(genres.get(row["key"], {}).values()),
             artists=tuple(
                 name for _, _, name in sorted(own.get(row["key"], []))[:6]
             ),
