@@ -299,26 +299,61 @@ def assign_names(clusters: list[Cluster]) -> None:
     overall = sum(counts.values()) or 1
 
     for cluster in clusters:
-        here = sum(count for _, count in cluster.pool) or 1
+        # Genres and tags are counted against different things: a genre share is
+        # of the genre mentions, a tag share is of the cluster. Summing them into
+        # one pool let a handful of tags shrink every genre share and put names on
+        # clusters they described a tenth of.
+        mentions = sum(count for _, count in cluster.genres) or 1
         scored = []
-        for name, count in cluster.pool:
-            share = count / here
-            if count < 3 or share < 0.08:
+        for name, count in cluster.genres:
+            share = count / mentions
+            # A fifth is the floor. Below it the name describes a minority and the
+            # reader takes it for the whole: Rap/Hip Hop naming a cluster that is
+            # eleven per cent rap, recommending electro.
+            if count < 3 or share < 0.20:
                 continue
-            # Share times distinctiveness: size keeps it descriptive, the ratio
-            # keeps it distinguishing.
             scored.append((share * (share / (counts[name] / overall)), name))
         scored.sort(key=lambda item: (-item[0], item[1]))
         singles = [name for _, name in scored]
+
+        # The owner's own tags, when no fetched genre describes the cluster. A tag
+        # needs a tenth rather than a fifth: it is a deliberate classification of a
+        # real sub-scene, where a fetched genre covering twelve per cent is noise.
+        if not singles and cluster.size:
+            tagged = [
+                (count / cluster.size, name)
+                for name, count in cluster.tags
+                if count >= 3 and count / cluster.size >= 0.10
+            ]
+            tagged.sort(key=lambda item: (-item[0], item[1]))
+            singles = [name for _, name in tagged]
         # Each candidate keeps the genre it was drawn from, so the bubble can be
-        # tinted for the name it ended up with.
-        pairs: list[tuple[str, str]] = []
-        if len(singles) > 1:
-            pairs.append((f"{singles[0]} & {singles[1]}", singles[0]))
-        options: list[tuple[str, str]] = [(name, name) for name in singles]
-        options[1:1] = pairs
-        options += [(name, name) for name, _ in cluster.pool if name not in singles]
-        options.append((cluster.family, cluster.family))
+        # tinted for the name it ended up with. Order matters: the strongest name,
+        # then it paired with each other strong one, then the others on their own.
+        # Falling straight through to any genre at all is how a cluster got named
+        # for something covering an eighth of it.
+        options: list[tuple[str, str]] = []
+        if singles:
+            options.append((singles[0], singles[0]))
+            for other in singles[1:]:
+                options.append((f"{singles[0]} & {other}", singles[0]))
+            for other in singles[1:]:
+                options.append((other, other))
+            for i, first in enumerate(singles[1:], start=1):
+                for second in singles[i + 1:]:
+                    options.append((f"{first} & {second}", first))
+        if not singles:
+            # Nothing here describes a fifth of the cluster, so it has no name of
+            # its own. Say that, and name its largest labels, which keeps it
+            # distinct without claiming any of them covers the cluster.
+            for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:6]:
+                options.append((f"mixed · {name}", name))
+        # Before falling back to a number: the name the cluster would have had if
+        # the stronger ones were free, marked as not describing it. A number tells
+        # the reader nothing at all, and eleven clusters were reaching that.
+        for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:4]:
+            options.append((f"mixed · {name}", name))
+        options.append((f"cluster {cluster.key}", cluster.family))
         cluster.options = options
 
     taken: set[str] = set()
@@ -664,6 +699,21 @@ function emphasise() {
 // list rather than an intersection of lists that were cut before the question
 // was known.
 function selectedCandidates() {
+  // Nothing selected is a question too: what does the whole library suggest.
+  // Ranked by how many clusters point at it, so the answer spans the taste
+  // rather than sitting inside one corner of it.
+  if (picked.size === 0) {
+    return DATA.candidates
+      .map(c => ({
+        name: c.name,
+        styles: c.styles,
+        hits: Object.keys(c.clusters).map(Number),
+        from: [],
+        pointers: Object.values(c.clusters).reduce((a, b) => a + b, 0),
+      }))
+      .sort((a, b) => b.hits.length - a.hits.length || b.pointers - a.pointers)
+      .slice(0, 60);
+  }
   const need = picked.size > 1 ? 2 : 1;
   const rows = [];
   for (const candidate of DATA.candidates) {
@@ -706,15 +756,16 @@ function topLabels(rows, chosen) {
 }
 
 function renderPanel() {
-  if (!picked.size) {
-    scope.innerHTML = '<h2>Pick a cluster</h2>' +
-      '<p class="meta">Bubbles are groups of artists that occur together, coloured by ' +
-      'genre family. Click one, or several, to see what they point at.</p>';
-    return;
-  }
+  const global = picked.size === 0;
+  let head = '';
   const chosen = [...picked].map(k => byKey.get(k)).filter(Boolean);
-  let head;
-  if (chosen.length === 1) {
+
+  if (global) {
+    head = '<h2>Everything at once</h2>' +
+      '<p class="meta">' + DATA.candidates.length.toLocaleString() + ' artists nobody here ' +
+      'has, ranked by how many groups of your taste point at them. Pick a cluster to ' +
+      'narrow it.</p>';
+  } else if (chosen.length === 1) {
     const c = chosen[0];
     const genres = c.genres.length
       ? c.genres.slice(0, 5).map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('') +
@@ -754,9 +805,14 @@ function renderPanel() {
   const rows = selectedCandidates();
   const suggest = s => {
     const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
-    const where = s.from.length > 1
-      ? ' across ' + s.from.length + ' of the selections: ' + s.from.map(esc).join(', ')
-      : ' from ' + esc(s.from[0] || '');
+    let where;
+    if (!s.from.length) {
+      where = ' across ' + s.hits.length + ' of your clusters';
+    } else if (s.from.length > 1) {
+      where = ' across ' + s.from.length + ' of the selections: ' + s.from.map(esc).join(', ');
+    } else {
+      where = ' from ' + esc(s.from[0]);
+    }
     return '<li><div class="name">' + esc(s.name) + '</div>' +
       '<div class="why">' + s.pointers + ' pointing artists' + where +
       '</div>' + (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
