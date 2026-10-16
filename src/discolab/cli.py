@@ -507,7 +507,7 @@ def check(
             component=row.get("component", 0),
             component_size=row.get("component_size", 0),
             degree=row.get("degree", 0),
-            bridge_score=row.get("bridge_score", row.get("weight", 0.0)),
+            bridge_score=row.get("best_score", row.get("bridge_score", 0.0)),
             videos=tuple(videos.get(row["name"], ())),
             tracks=tuple(owned.get(row["key"], [])[:tracks]),
             known_titles=tuple(
