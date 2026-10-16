@@ -22,6 +22,29 @@ def ensure_schema(driver: Driver, database: str) -> None:
         )
 
 
+def delete_orphans(driver: Driver, database: str) -> dict[str, int]:
+    """Remove artists and labels with no relationships, in batches."""
+    removed = {}
+    for key, node_label in (("artists", "Artist"), ("labels", "Label")):
+        total = 0
+        while True:
+            result = driver.execute_query(
+                f"""
+                MATCH (n:{node_label}) WHERE NOT (n)--()
+                WITH n LIMIT 5000
+                DELETE n
+                RETURN count(*) AS removed
+                """,
+                database_=database,
+            )
+            count = result.records[0]["removed"]
+            total += count
+            if count == 0:
+                break
+        removed[key] = total
+    return removed
+
+
 def clear_discogs_flag(driver: Driver, database: str, external_only: bool) -> int:
     """Forget that Discogs was consulted, so it is consulted again."""
     clause = "AND coalesce(a.external, false) = true" if external_only else ""

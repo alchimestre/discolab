@@ -668,6 +668,32 @@ def _expand_through_labels(settings: Settings, limit: int, min_artists: int) -> 
     typer.echo(f"artists not in your collection: {new_artists}")
 
 
+@app.command()
+def prune(
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Remove artists and labels left with no relationships at all.
+
+    A failed expansion or a cleared edge leaves nodes behind, and the
+    enrichment walks them, spending API calls on names that cannot appear on a
+    page because nothing connects to them.
+    """
+    settings = _settings([])
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        counts = query.orphan_counts(driver, database)
+        if not any(counts.values()):
+            typer.echo("nothing orphaned")
+            return
+        for label, count in counts.items():
+            typer.echo(f"  {label}: {count}")
+        if not yes:
+            typer.confirm("delete them?", abort=True)
+        removed = store.delete_orphans(driver, database)
+    for label, count in removed.items():
+        typer.echo(f"removed {count} {label}")
+
+
 def _enrich_candidates_from_discogs(driver, database: str, keys: list[str]) -> None:
     """Ask Discogs only about the artists about to be shown.
 

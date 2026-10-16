@@ -318,6 +318,20 @@ def track_paths(driver: Driver, database: str) -> list[dict]:
     return [dict(record) for record in records]
 
 
+def orphan_counts(driver: Driver, database: str) -> dict[str, int]:
+    """Artists and labels with no relationships at all."""
+    record = driver.execute_query(
+        """
+        MATCH (a:Artist) WHERE NOT (a)--()
+        WITH count(a) AS artists
+        MATCH (l:Label) WHERE NOT (l)--()
+        RETURN artists, count(l) AS labels
+        """,
+        database_=database,
+    ).records[0]
+    return {"artists": record["artists"], "labels": record["labels"]}
+
+
 def artist_keys(driver: Driver, database: str) -> list[str]:
     records = driver.execute_query(
         "MATCH (a:Artist) RETURN a.key AS key", database_=database
