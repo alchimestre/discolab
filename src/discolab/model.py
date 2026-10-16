@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class RawTrack:
-    """One audio file as a provider read it, before resolution."""
+    """One audio file or scrobble as a provider read it, before resolution."""
 
     source: str
     path: str
@@ -14,6 +14,7 @@ class RawTrack:
     album_raw: str | None
     duration_ms: int | None
     containers: tuple[tuple[str, str], ...]
+    plays: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,7 @@ class Track:
     artist_name: str
     duration_ms: int | None
     paths: tuple[str, ...]
+    plays: int = 0
 
 
 @dataclass(frozen=True, slots=True)

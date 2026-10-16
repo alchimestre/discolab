@@ -158,9 +158,15 @@ def build_catalog(raw_tracks: Iterable[RawTrack]) -> Catalog:
                 "artist_name": primary,
                 "duration_ms": raw.duration_ms,
                 "paths": [],
+                "plays": 0,
             }
             track_records[track_key] = record
-        record["paths"].append(raw.path)
+        elif record["duration_ms"] is None:
+            record["duration_ms"] = raw.duration_ms
+        # A scrobble has no file, so it contributes plays and containers only.
+        if raw.path:
+            record["paths"].append(raw.path)
+        record["plays"] += raw.plays
 
         for extra in names[1:]:
             _add_credit(credits, artist_names, extra, artist_key, track_key, "collab")

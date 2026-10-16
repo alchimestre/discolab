@@ -10,5 +10,24 @@ services:
     volumes:
       - neo4j-data:/data
 
+  # Only runs for the OAuth dance. Enable with the spotify profile:
+  #   docker compose --profile spotify run --rm spotify-callback
+  spotify-callback:
+    build:
+      context: .
+      dockerfile: Dockerfile.callback
+    profiles: ["spotify"]
+    env_file:
+      - .env
+    environment:
+      SPOTIFY_TOKEN_PATH: /out/spotify-token.json
+      # Loopback inside a container is not reachable through a published port.
+      SPOTIFY_BIND_HOST: 0.0.0.0
+    volumes:
+      - ./out:/out
+      - ./certs:/certs:ro
+    ports:
+      - "${SPOTIFY_CALLBACK_PORT:-8888}:${SPOTIFY_CALLBACK_PORT:-8888}"
+
 volumes:
   neo4j-data:

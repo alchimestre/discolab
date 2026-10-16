@@ -36,8 +36,10 @@ def owned_tracks_for(
         """
         UNWIND $keys AS key
         MATCH (t:Track)-[:BY]->(a:Artist {key: key})
-        WITH a.key AS artist_key, t ORDER BY t.title
-        WITH artist_key, collect({title: t.title, path: t.paths[0]})[0..$per_artist] AS tracks
+        WITH a.key AS artist_key, t ORDER BY coalesce(t.plays, 0) DESC, t.title
+        WITH artist_key,
+             collect({title: t.title, path: coalesce(t.paths[0], ''), plays: coalesce(t.plays, 0)})
+               [0..$per_artist] AS tracks
         RETURN artist_key, tracks
         """,
         keys=artist_keys,

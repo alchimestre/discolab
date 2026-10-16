@@ -67,6 +67,7 @@ def _write_tracks(driver: Driver, database: str, catalog: Catalog) -> None:
             "artist_key": track.artist_key,
             "duration_ms": track.duration_ms,
             "paths": list(track.paths),
+            "plays": track.plays,
         }
         for track in catalog.tracks
     ]
@@ -75,7 +76,8 @@ def _write_tracks(driver: Driver, database: str, catalog: Catalog) -> None:
             """
             UNWIND $rows AS row
             MERGE (t:Track {key: row.key})
-            SET t.title = row.title, t.duration_ms = row.duration_ms, t.paths = row.paths
+            SET t.title = row.title, t.duration_ms = row.duration_ms,
+                t.paths = row.paths, t.plays = row.plays
             WITH t, row
             MATCH (a:Artist {key: row.artist_key})
             MERGE (t)-[:BY]->(a)

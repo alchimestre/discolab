@@ -5,4 +5,5 @@ __pycache__/
 .env
 .scratch/
 out/
+certs/
 .DS_Store

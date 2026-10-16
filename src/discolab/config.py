@@ -12,6 +12,13 @@ class Settings:
     neo4j_user: str
     neo4j_password: str
     neo4j_database: str
+    lastfm_api_key: str | None = None
+    lastfm_username: str | None = None
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
+    spotify_redirect_uri: str = "http://127.0.0.1:8888/callback"
+    spotify_tls_cert: str | None = None
+    spotify_tls_key: str | None = None
 
     @classmethod
     def from_env(cls, roots: tuple[Path, ...] | None = None) -> "Settings":
@@ -21,6 +28,15 @@ class Settings:
             neo4j_user=os.environ.get("NEO4J_USER", "neo4j"),
             neo4j_password=os.environ.get("NEO4J_PASSWORD", "discolab-dev"),
             neo4j_database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+            lastfm_api_key=os.environ.get("LASTFM_API_KEY") or None,
+            lastfm_username=os.environ.get("LASTFM_USERNAME") or None,
+            spotify_client_id=os.environ.get("SPOTIFY_CLIENT_ID") or None,
+            spotify_client_secret=os.environ.get("SPOTIFY_CLIENT_SECRET") or None,
+            spotify_redirect_uri=os.environ.get(
+                "SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback"
+            ),
+            spotify_tls_cert=os.environ.get("SPOTIFY_TLS_CERT") or None,
+            spotify_tls_key=os.environ.get("SPOTIFY_TLS_KEY") or None,
         )
 
 

@@ -85,7 +85,7 @@ class Candidate:
     bridge_score: float
     videos: tuple[Video, ...]
     tracks: tuple[dict, ...]
-    owned_titles: tuple[str, ...] = ()
+    known_titles: tuple[tuple[str, int], ...] = ()
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -280,10 +280,10 @@ def library_keys(library_titles: Sequence[str]) -> list[str]:
 
 def holds_track(
     video: Video,
-    artist_titles: Sequence[str],
+    known_titles: Sequence[tuple[str, int]],
     keys: Sequence[str],
 ) -> bool:
-    """True when the library already holds the track this video plays.
+    """True when the library physically holds the track this video plays.
 
     Checks the artist's own titles first, then the whole library, because a
     track can be held under a collaboration, a cover or a different spelling
@@ -292,9 +292,36 @@ def holds_track(
     title_key = normalise(video.title)
     if not title_key:
         return False
-    if any(key and key in title_key for key in (normalise(t) for t in artist_titles)):
+    if any(key and key in title_key for key in (normalise(t) for t, _ in known_titles)):
         return True
     return any(key in title_key for key in keys)
+
+
+def track_plays(video: Video, known_titles: Sequence[tuple[str, int]]) -> int:
+    """How often history shows this track played, 0 when it never was."""
+    title_key = normalise(video.title)
+    if not title_key:
+        return 0
+    best = 0
+    for title, plays in known_titles:
+        key = normalise(title)
+        if key and key in title_key:
+            best = max(best, plays)
+    return best
+
+
+def tag_for(
+    video: Video,
+    known_titles: Sequence[tuple[str, int]],
+    keys: Sequence[str],
+) -> tuple[str, str]:
+    """The label and css class for an embed: held, played before, or new."""
+    if holds_track(video, known_titles, keys):
+        return "already held", "already-held"
+    plays = track_plays(video, known_titles)
+    if plays:
+        return f"played {plays}x", "played"
+    return "new", "new"
 
 
 def ordered_videos(candidate: Candidate, keys: Sequence[str] = ()) -> list[Video]:
@@ -303,13 +330,13 @@ def ordered_videos(candidate: Candidate, keys: Sequence[str] = ()) -> list[Video
     Ordered here rather than at search time so that a cached resolution still
     puts something new in front of the listener.
     """
-    fresh = [
-        v for v in candidate.videos if not holds_track(v, candidate.owned_titles, keys)
-    ]
-    held = [
-        v for v in candidate.videos if holds_track(v, candidate.owned_titles, keys)
-    ]
-    return fresh + held
+    def rank(video: Video) -> tuple[bool, bool]:
+        return (
+            holds_track(video, candidate.known_titles, keys),
+            track_plays(video, candidate.known_titles) > 0,
+        )
+
+    return sorted(candidate.videos, key=rank)
 
 
 def build_page(
@@ -328,7 +355,7 @@ def build_page(
         for candidate in candidates
         if candidate.videos
         and holds_track(
-            ordered_videos(candidate, keys)[0], candidate.owned_titles, keys
+            ordered_videos(candidate, keys)[0], candidate.known_titles, keys
         )
     )
     return f"""<!doctype html>
@@ -350,6 +377,7 @@ def build_page(
   .tag {{ display: inline-block; font-size: 11px; padding: 0 5px; border-radius: 8px;
          border: 1px solid currentColor; opacity: .8; }}
   .tag.already-held {{ color: var(--warn, #b45309); }}
+  .tag.played {{ opacity: .6; }}
   .keep {{ margin-top: 10px; display: inline-block; font-size: 14px; }}
   .alts {{ list-style: none; padding-left: 0; }}
   .alts a {{ font-size: 12px; }}
@@ -409,8 +437,8 @@ def build_page(
     if (line) line.textContent = video.label;
     const tag = section.querySelector('.video-title .tag');
     if (tag) {{
-      tag.textContent = video.held ? 'already held' : 'new';
-      tag.className = 'tag ' + (video.held ? 'already-held' : 'new');
+      tag.textContent = video.state;
+      tag.className = 'tag ' + video.cls;
     }}
   }}
 
@@ -453,10 +481,12 @@ def build_page(
 def _section(index: int, candidate: Candidate, keys: Sequence[str]) -> str:
     query = urllib.parse.quote(candidate.name)
     videos = ordered_videos(candidate, keys)
-    playlist = [
-        {"id": v.video_id, "label": v.label, "held": holds_track(v, candidate.owned_titles, keys)}
-        for v in videos
-    ]
+    playlist = []
+    for video in videos:
+        label, css = tag_for(video, candidate.known_titles, keys)
+        playlist.append(
+            {"id": video.video_id, "label": video.label, "state": label, "cls": css}
+        )
     data_videos = html.escape(json.dumps(playlist, ensure_ascii=False), quote=True)
     parts = [
         f'<section data-videos="{data_videos}">',
@@ -474,8 +504,7 @@ def _section(index: int, candidate: Candidate, keys: Sequence[str]) -> str:
 
     primary = videos[0] if videos else None
     if primary is not None:
-        held = holds_track(primary, candidate.owned_titles, keys)
-        tag = "already held" if held else "new"
+        tag, css = tag_for(primary, candidate.known_titles, keys)
         parts.append(
             f'<div class="player"><iframe class="yt" src="{primary.embed_url}" '
             'loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; '
@@ -489,7 +518,7 @@ def _section(index: int, candidate: Candidate, keys: Sequence[str]) -> str:
             "</div>"
         )
         parts.append(
-            f'<p class="video-title"><span class="tag {tag.replace(" ", "-")}">{tag}</span> '
+            f'<p class="video-title"><span class="tag {css}">{tag}</span> '
             f'<span class="playing">{html.escape(primary.label)}</span></p>'
         )
     else:

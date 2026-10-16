@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import secrets
+import subprocess
 import threading
 import time
+import urllib.parse
 import webbrowser
 from pathlib import Path
 
@@ -19,7 +22,15 @@ from .check import (
 )
 from .config import Settings, load_env_file
 from .graph import derive, load, query, store
-from .providers import LocalFilesProvider
+from .model import RawTrack
+from .providers import (
+    LastfmError,
+    LastfmProvider,
+    LocalFilesProvider,
+    SpotifyClient,
+    SpotifyError,
+    SpotifyProvider,
+)
 from .resolve import build_catalog
 
 app = typer.Typer(add_completion=False, help="Taste graph over local music metadata.")
@@ -31,23 +42,75 @@ def ingest(
     recreate: bool = typer.Option(
         False, "--recreate", help="Delete existing graph data before loading."
     ),
+    lastfm: bool = typer.Option(
+        False, "--lastfm", help="Also read scrobbles, which add play counts and listening sessions."
+    ),
+    spotify: bool = typer.Option(
+        False, "--spotify", help="Also read Spotify playlists and liked songs."
+    ),
+    scrobbles: int = typer.Option(
+        20000, "--scrobbles", help="How much scrobble history to read."
+    ),
 ) -> None:
-    """Read local audio files and load observed nodes and edges into Neo4j."""
+    """Read the configured providers and load observed nodes and edges into Neo4j."""
     settings = _settings(root)
-    if not settings.library_roots:
+    raw: list[RawTrack] = []
+    unparsed: list[tuple[str, str]] = []
+
+    if settings.library_roots:
+        scan = LocalFilesProvider(settings.library_roots).scan()
+        raw.extend(scan.tracks)
+        unparsed.extend(scan.skipped)
+        typer.echo(
+            f"local files: {len(scan.tracks)} in {len(settings.library_roots)} root(s), "
+            f"skipped {len(scan.skipped)}"
+        )
+    elif not lastfm:
         typer.echo("no library roots: pass --root or set DISCOLAB_LIBRARY_ROOTS", err=True)
         raise typer.Exit(code=2)
-    scan = LocalFilesProvider(settings.library_roots).scan()
-    typer.echo(
-        f"scanned {len(scan.tracks)} files in {len(settings.library_roots)} root(s), "
-        f"skipped {len(scan.skipped)}"
-    )
 
-    catalog = build_catalog(scan.tracks)
+    if lastfm:
+        if not settings.lastfm_api_key or not settings.lastfm_username:
+            typer.echo("set LASTFM_API_KEY and LASTFM_USERNAME in .env", err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"last.fm: reading up to {scrobbles} scrobbles, this takes a few minutes...")
+        try:
+            scrobble_scan = LastfmProvider(
+                settings.lastfm_api_key, settings.lastfm_username, scrobbles
+            ).scan()
+        except LastfmError as error:
+            typer.echo(f"last.fm failed: {error}", err=True)
+            raise typer.Exit(code=3) from error
+        raw.extend(scrobble_scan.tracks)
+        unparsed.extend(scrobble_scan.skipped)
+        typer.echo(f"last.fm: {len(scrobble_scan.tracks)} distinct tracks")
+
+    if spotify:
+        if not settings.spotify_client_id or not settings.spotify_client_secret:
+            typer.echo("set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env", err=True)
+            raise typer.Exit(code=2)
+        client = SpotifyClient(
+            settings.spotify_client_id, settings.spotify_client_secret, TOKEN_PATH
+        )
+        if not client.has_login:
+            typer.echo("not logged in: run `discolab spotify-login` first", err=True)
+            raise typer.Exit(code=2)
+        typer.echo("spotify: reading playlists and liked songs...")
+        try:
+            spotify_scan = SpotifyProvider(client).scan()
+        except SpotifyError as error:
+            typer.echo(f"spotify failed: {error}", err=True)
+            raise typer.Exit(code=3) from error
+        raw.extend(spotify_scan.tracks)
+        unparsed.extend(spotify_scan.skipped)
+        typer.echo(f"spotify: {len(spotify_scan.tracks)} distinct tracks")
+
+    catalog = build_catalog(raw)
+    played = sum(1 for track in catalog.tracks if track.plays)
     typer.echo(
-        f"resolved {len(catalog.artists)} artists, {len(catalog.tracks)} tracks, "
-        f"{len(catalog.credits)} credits, {len(catalog.containers)} containers, "
-        f"{len(catalog.memberships)} memberships"
+        f"resolved {len(catalog.artists)} artists, {len(catalog.tracks)} tracks "
+        f"({played} played), {len(catalog.credits)} credits, "
+        f"{len(catalog.containers)} containers, {len(catalog.memberships)} memberships"
     )
     if catalog.skipped:
         typer.echo(f"unresolved {len(catalog.skipped)}")
@@ -153,9 +216,10 @@ def run(
     root: list[Path] = typer.Option(None, "--root", help="Library root, repeatable."),
     limit: int = typer.Option(20, "--limit"),
     min_degree: int = typer.Option(2, "--min-degree"),
+    lastfm: bool = typer.Option(False, "--lastfm", help="Also read scrobbles."),
 ) -> None:
     """Ingest, derive, and print candidates in one pass."""
-    ingest(root=root, recreate=True)
+    ingest(root=root, recreate=True, lastfm=lastfm, scrobbles=20000)
     derive_edges(resolution=1.0, min_artists=2, max_artists=80)
     candidates(limit=limit, min_degree=min_degree, min_bridge=0.0, tracks=True)
 
@@ -171,6 +235,87 @@ def _explain_empty(driver, database: str) -> None:
         f"  islands {summary['components']}, largest {summary['largest_component']}"
     )
     typer.echo("  lower --min-degree, or add an expansion provider to connect islands")
+
+
+TOKEN_PATH = Path("out/spotify-token.json")
+
+
+@app.command("spotify-login")
+def spotify_login(
+    container: bool = typer.Option(
+        False,
+        "--container",
+        help="Serve the callback from the compose service instead of this process.",
+    ),
+) -> None:
+    """Authorise against Spotify once, then cache the refresh token."""
+    settings = _settings([])
+    if not settings.spotify_client_id or not settings.spotify_client_secret:
+        typer.echo("set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env", err=True)
+        raise typer.Exit(code=2)
+
+    redirect = settings.spotify_redirect_uri
+    parsed = urllib.parse.urlparse(redirect)
+    client = SpotifyClient(
+        settings.spotify_client_id, settings.spotify_client_secret, TOKEN_PATH
+    )
+
+    if container:
+        _login_via_container(client, redirect)
+        return
+
+    tls = None
+    if settings.spotify_tls_cert and settings.spotify_tls_key:
+        tls = (settings.spotify_tls_cert, settings.spotify_tls_key)
+    if parsed.scheme == "https" and tls is None:
+        typer.echo(
+            "the redirect URI is https but SPOTIFY_TLS_CERT and SPOTIFY_TLS_KEY are "
+            "unset. Use --container, or a loopback redirect URI which Spotify "
+            "permits over http",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if port < 1024:
+        typer.echo(f"note: binding port {port} needs root", err=True)
+
+    typer.echo(f"listening on {redirect}, a browser should open")
+    try:
+        client.login(redirect, tls)
+    except SpotifyError as error:
+        typer.echo(f"login failed: {error}", err=True)
+        raise typer.Exit(code=3) from error
+    typer.echo(f"logged in, refresh token cached in {TOKEN_PATH}")
+
+
+def _login_via_container(client: SpotifyClient, redirect: str) -> None:
+    """The callback runs as a compose service, so nothing serves on the host."""
+    state = secrets.token_urlsafe(16)
+    verifier = secrets.token_urlsafe(64)
+    url = client.build_authorize_url(redirect, state, verifier)
+
+    command = [
+        "docker", "compose", "--profile", "spotify", "run", "--rm",
+        # compose run publishes nothing without this, so the browser could not
+        # reach the callback.
+        "--service-ports",
+        "-e", f"SPOTIFY_STATE={state}",
+        "-e", f"SPOTIFY_VERIFIER={verifier}",
+        "spotify-callback",
+    ]
+    typer.echo("starting the callback container")
+    try:
+        process = subprocess.Popen(command)
+    except FileNotFoundError:
+        typer.echo("docker is not on PATH", err=True)
+        raise typer.Exit(code=2) from None
+
+    typer.echo("opening the authorization page")
+    webbrowser.open(url)
+    if process.wait() != 0:
+        typer.echo("the callback container did not finish the exchange", err=True)
+        raise typer.Exit(code=3)
+    typer.echo(f"logged in, refresh token cached in {TOKEN_PATH}")
 
 
 @app.command()
@@ -236,7 +381,9 @@ def check(
             bridge_score=row["bridge_score"],
             videos=tuple(videos.get(row["name"], ())),
             tracks=tuple(owned.get(row["key"], [])[:tracks]),
-            owned_titles=tuple(track["title"] for track in owned.get(row["key"], [])),
+            known_titles=tuple(
+                (track["title"], track["plays"]) for track in owned.get(row["key"], [])
+            ),
         )
         for row in rows
     ]

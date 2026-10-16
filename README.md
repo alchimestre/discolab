@@ -23,9 +23,10 @@ Neo4j Browser is at `http://localhost:7474`.
 
 | Command | Does |
 |---|---|
-| `discolab ingest --root PATH [--root PATH] [--recreate]` | Scan files, resolve entities, load observed nodes and edges |
+| `discolab ingest --root PATH [--root PATH] [--recreate] [--lastfm] [--scrobbles N]` | Read providers, resolve entities, load observed nodes and edges |
 | `discolab derive [--resolution F] [--min-artists N] [--max-artists N]` | Build artist edges, communities, islands, bridge scores |
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
+| `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
 | `discolab check [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
 | `discolab stats [--islands N]` | Node, edge and island counts |
 | `discolab reset --yes` | Delete every node and relationship |
@@ -74,6 +75,14 @@ Resolving the embeds is the only step that touches the network, and `--no-youtub
 | `NEO4J_USER` | `neo4j` | |
 | `NEO4J_PASSWORD` | `discolab-dev` | Change this outside local development |
 | `NEO4J_DATABASE` | `neo4j` | |
+| `LASTFM_API_KEY` | none | Enables `--lastfm`. The key alone is enough; the shared secret is not used |
+| `LASTFM_USERNAME` | none | The account whose scrobbles to read |
+| `SPOTIFY_CLIENT_ID` | none | Enables `--spotify` |
+| `SPOTIFY_CLIENT_SECRET` | none | |
+| `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | Must match the app's registered URI exactly |
+| `SPOTIFY_CALLBACK_PORT` | `8888` | Must match the port in the redirect URI, since the container publishes it |
+| `SPOTIFY_TLS_CERT` | none | Certificate for an https redirect URI |
+| `SPOTIFY_TLS_KEY` | none | Its key |
 
 ## Graph model
 
@@ -100,6 +109,40 @@ Filenames are read as `Artist - Title`. Credits are parsed from that text.
 | Feature credit | `AMMAR 808 feat. Sofiane Saidi - Degdega` | feature |
 | Version words | `(Original Mix)`, `(Extended Mix)` | dropped, not a person |
 | Shared container | two artists on one album tag | co-occurrence |
+| A listening session | two artists played within thirty minutes | co-occurrence |
+
+## What Last.fm adds
+
+`--lastfm` reads scrobble history and gives two things the files cannot.
+
+Play counts, from `user.gettoptracks`, written to `Track.plays`. That is the first real play signal in the graph, so unplayed becomes definable.
+
+Listening sessions, from `user.getrecenttracks`. Scrobbles are grouped into sessions split by a thirty minute gap, and each session becomes a container. Containers are what the co-occurrence edges are built from, so a session turns real listening into artist to artist edges. A library of loose single tracks has almost no albums, which is why own-data co-occurrence contributed one edge before this.
+
+Reading more history reads more sessions: `--scrobbles N` sets how many recent scrobbles to read, and `LastfmProvider.top_pages` caps the top-tracks pagination.
+
+## What Spotify adds
+
+`--spotify` reads every playlist plus liked songs and takes two things from them.
+
+Playlist membership becomes a container, so artists sharing a playlist co-occur. Liked songs is one large container, and it is capped like any other, so it only contributes when it is small enough to mean something.
+
+Ownership. A track in a playlist is a track you know, whether or not a file for it exists on disk.
+
+## The Spotify login
+
+```
+uv run discolab spotify-login              # callback served by this process
+uv run discolab spotify-login --container  # callback served by the compose service
+```
+
+Both need `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, a registered redirect URI matching `SPOTIFY_REDIRECT_URI` exactly, and your Spotify account added under the app's **Settings → User Management**. A new app is in development mode and only listed users can authorise, so without that step the login fails with a 403.
+
+Spotify requires HTTPS for redirect URIs except on a loopback address, where plain HTTP is permitted, and it rejects `localhost` as a hostname. So `http://127.0.0.1:8888/callback` works without a certificate, and it keeps the callback off the network entirely.
+
+For an HTTPS redirect URI, either point `SPOTIFY_TLS_CERT` and `SPOTIFY_TLS_KEY` at a certificate, or use `--container`, which runs the callback as the `spotify-callback` compose service. The container needs an HTTP or HTTPS port published to match the redirect URI. It binds all interfaces because a published port cannot reach a container's loopback, which is what `SPOTIFY_BIND_HOST` controls.
+
+The refresh token is cached in `out/spotify-token.json`, which is not committed.
 
 ## Known limits
 

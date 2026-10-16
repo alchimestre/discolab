@@ -1,0 +1,8 @@
+.git
+.venv
+out
+certs
+.scratch
+__pycache__
+.pytest_cache
+.env
