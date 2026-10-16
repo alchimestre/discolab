@@ -516,6 +516,9 @@ PAGE = """<!doctype html>
   .bubble:hover text, .bubble:focus-visible text { opacity: 1; }
   .bubble.active circle { stroke-width: 3.6; fill-opacity: .72; }
   .bubble.dimmed { opacity: .45; }
+  .bubble.linked circle { stroke-width: 2.8; stroke-dasharray: 7 5; fill-opacity: .42; }
+  .bubble.linked text { opacity: 1; }
+  .bubble.open.linked circle { fill-opacity: .18; }
   .bubble.open circle { fill-opacity: .12; }
   .bubble.open text { display: none; }
   .inner-bubble circle { stroke-width: 1.2; pointer-events: none; }
@@ -541,6 +544,14 @@ PAGE = """<!doctype html>
   #scope .picked button { font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer;
                           border-radius: 9px; border: 1px solid var(--line);
                           background: transparent; color: var(--ink); }
+  p.aside { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+            color: var(--quiet); margin: 14px 0 6px; }
+  #scope .partners { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 6px; }
+  #scope .partners button { font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer;
+                            border-radius: 9px; border: 1px dashed var(--line);
+                            background: transparent; color: var(--ink); }
+  #scope .partners button:hover { border-style: solid; }
+  #scope .partners b { color: var(--quiet); font-weight: 500; }
   ol.suggestions { list-style: none; margin: 0; padding: 0; }
   ol.suggestions .from { color: var(--quiet); }
   .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
@@ -584,6 +595,23 @@ PAGE = """<!doctype html>
 const DATA = __PAYLOAD__;
 const byKey = new Map(DATA.clusters.map(c => [c.key, c]));
 const labelOf = new Map(DATA.candidates.map(c => [c.name, c]));
+
+// Which clusters share candidates, and how many. Five hundred and seventy-four of
+// the eight hundred and sixty-one pairs share nothing, so the map says up front
+// which pair would answer instead of leaving that to be discovered by guessing.
+const neighbours = new Map();
+for (const candidate of DATA.candidates) {
+  const keys = Object.keys(candidate.clusters).map(Number).filter(k => byKey.has(k));
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      for (const [self, other] of [[keys[i], keys[j]], [keys[j], keys[i]]]) {
+        if (!neighbours.has(self)) neighbours.set(self, new Map());
+        const row = neighbours.get(self);
+        row.set(other, (row.get(other) || 0) + 1);
+      }
+    }
+  }
+}
 const bubbles = [...document.querySelectorAll('.bubble')];
 const edges = [...document.querySelectorAll('.edge')];
 const scope = document.getElementById('scope');
@@ -614,14 +642,19 @@ function colourOf(family) {
 })();
 
 function emphasise() {
-  const any = picked.size > 0;
+  const only = picked.size === 1 ? [...picked][0] : null;
+  const partners = only === null ? null : (neighbours.get(only) || new Map());
   for (const b of bubbles) {
-    const on = picked.has(Number(b.dataset.key));
+    const key = Number(b.dataset.key);
+    const on = picked.has(key);
+    const linked = partners !== null && partners.has(key);
     b.classList.toggle('active', on);
-    b.classList.toggle('dimmed', any && !on);
+    b.classList.toggle('linked', linked);
+    b.classList.toggle('dimmed', picked.size > 0 && !on && !linked);
   }
   for (const e of edges) {
-    const on = !any || picked.has(Number(e.dataset.a)) || picked.has(Number(e.dataset.b));
+    const on = picked.size === 0
+      || picked.has(Number(e.dataset.a)) || picked.has(Number(e.dataset.b));
     e.style.strokeOpacity = on ? '' : '0.02';
   }
 }
@@ -703,6 +736,21 @@ function renderPanel() {
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
     esc(c.label) + ' ×</button>').join('');
+  // With one cluster on, name the clusters that would answer. Choosing blind is
+  // how you land on one of the five hundred and seventy-four pairs that share
+  // nothing and read it as a broken page.
+  let partners = '';
+  if (picked.size === 1) {
+    const linked = [...(neighbours.get([...picked][0]) || new Map())]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12);
+    partners = linked.length
+      ? '<p class="aside">Shares candidates with</p><div class="partners">' +
+        linked.map(([key, n]) => '<button data-add="' + key + '">' +
+          esc((byKey.get(key) || {}).label || key) + ' <b>' + n + '</b></button>').join('') +
+        '</div>'
+      : '<p class="aside">Shares no candidates with any other cluster.</p>';
+  }
   const rows = selectedCandidates();
   const suggest = s => {
     const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
@@ -730,10 +778,18 @@ function renderPanel() {
     body = '<p class="empty">Nothing reaches this cluster yet. Expanding from it ' +
       'would find candidates.</p>';
   }
-  scope.innerHTML = head + card + '<div class="picked">' + chips + '</div>' + body;
+  scope.innerHTML = head + card + '<div class="picked">' + chips + '</div>' +
+    partners + body;
   for (const button of scope.querySelectorAll('[data-drop]')) {
     button.addEventListener('click', () => {
       picked.delete(Number(button.dataset.drop));
+      emphasise();
+      renderPanel();
+    });
+  }
+  for (const button of scope.querySelectorAll('[data-add]')) {
+    button.addEventListener('click', () => {
+      picked.add(Number(button.dataset.add));
       emphasise();
       renderPanel();
     });
