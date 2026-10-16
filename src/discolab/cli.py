@@ -968,12 +968,6 @@ def check(
 @app.command("map")
 def map_page(
     out: Path = typer.Option(Path("out/map.html"), "--out", help="Page to write."),
-    suggestions: int = typer.Option(
-        40,
-        "--suggestions",
-        help="Suggestions to carry per cluster. The panel combines and ranks them, "
-        "so a thin list per cluster caps what a selection can surface.",
-    ),
     min_size: int = typer.Option(
         5,
         "--min-size",
@@ -1036,11 +1030,20 @@ def map_page(
             MATCH (seed:Artist)-[:SIMILAR_TO]->(ext:Artist)
             WHERE seed.community IS NOT NULL AND seed.community >= 0
               AND coalesce(ext.external, false)
-            WITH seed.community AS key, ext, count(DISTINCT seed) AS agreement,
-                 collect(DISTINCT seed.name)[0..3] AS via
-            WHERE agreement >= 2
-            RETURN key, ext.name AS name, agreement, via,
-                   coalesce(ext.styles, []) AS styles
+            WITH ext, seed.community AS cluster, count(DISTINCT seed) AS agreement
+            RETURN ext.key AS key, ext.name AS name,
+                   coalesce(ext.styles, []) AS styles,
+                   coalesce(ext.labels, []) AS labels,
+                   cluster, agreement
+            """,
+            database_=database,
+        ).records
+        cluster_labels = driver.execute_query(
+            """
+            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
+              AND size(coalesce(a.labels, [])) > 0
+            UNWIND a.labels AS name
+            RETURN a.community AS key, name, count(*) AS n
             """,
             database_=database,
         ).records
@@ -1077,16 +1080,27 @@ def map_page(
             (1 if row["external"] else 0, -row["degree"], row["name"])
         )
 
-    found: dict[int, list[dict]] = {}
+    # One entry per artist, carrying every cluster that points at it. Cutting this
+    # per cluster was destroying the bridges: 694 artists are pointed at by more
+    # than one cluster, and keeping only each cluster's strongest forty left six.
+    catalogue: dict[str, dict] = {}
     for row in candidates:
-        found.setdefault(row["key"], []).append(
+        entry = catalogue.setdefault(
+            row["key"],
             {
                 "name": row["name"],
-                "agreement": row["agreement"],
-                "via": ", ".join(row["via"]),
                 "styles": list(row["styles"]),
-            }
+                "labels": list(row["labels"]),
+                "clusters": {},
+            },
         )
+        entry["clusters"][str(row["cluster"])] = row["agreement"]
+    candidate_rows = list(catalogue.values())
+
+    labels_here: dict[int, dict[str, int]] = {}
+    for row in cluster_labels:
+        labels_here.setdefault(row["key"], {})
+        labels_here[row["key"]][row["name"]] = labels_here[row["key"]].get(row["name"], 0) + row["n"]
 
     clusters = [
         Cluster(
@@ -1109,9 +1123,12 @@ def map_page(
             artists=tuple(
                 name for _, _, name in sorted(own.get(row["key"], []))[:6]
             ),
-            suggestions=sorted(
-                found.get(row["key"], []), key=lambda s: (-s["agreement"], s["name"])
-            )[:suggestions],
+            labels=tuple(
+                sorted(
+                    labels_here.get(row["key"], {}).items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:10]
+            ),
         )
         for row in sizes
     ]
@@ -1161,14 +1178,16 @@ def map_page(
             ],
         )
 
-    page = render_page("Your taste, as clusters", clusters, weights)
+    page = render_page("Your taste, as clusters", clusters, weights, candidate_rows)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
     covered = sum(1 for cluster in clusters if cluster.genres)
+    bridged = sum(1 for row in candidate_rows if len(row["clusters"]) > 1)
     typer.echo(
         f"wrote {out} · {len(clusters)} clusters · "
         f"{covered} of them have a genre recorded · "
-        f"{sum(len(c.suggestions) for c in clusters)} suggestions"
+        f"{len(candidate_rows):,} candidates, {bridged:,} of them touching "
+        f"more than one cluster"
         + (f" · {hidden} groups under {min_size} artists hidden" if hidden else "")
     )
 

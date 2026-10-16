@@ -118,6 +118,7 @@ class Cluster:
     tagged: int = 0
     genres: tuple[tuple[str, int], ...] = ()
     tags: tuple[tuple[str, int], ...] = ()
+    labels: tuple[tuple[str, int], ...] = ()
     artists: tuple[str, ...] = ()
     x: float = 0.0
     y: float = 0.0
@@ -458,7 +459,7 @@ def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> 
     )
 
 
-def _payload(clusters: list[Cluster]) -> str:
+def _payload(clusters: list[Cluster], candidates: list[dict]) -> str:
     return json.dumps(
         {
             "clusters": [
@@ -473,11 +474,12 @@ def _payload(clusters: list[Cluster]) -> str:
                     "colour": cluster.colour,
                     "sub_genre": cluster.sub_genre,
                     "genres": [{"name": name, "n": n} for name, n in cluster.genres],
+                    "labels": [{"name": name, "n": n} for name, n in cluster.labels],
                     "artists": list(cluster.artists),
-                    "suggestions": cluster.suggestions,
                 }
                 for cluster in clusters
-            ]
+            ],
+            "candidates": candidates,
         },
         ensure_ascii=False,
     )
@@ -541,6 +543,13 @@ PAGE = """<!doctype html>
                           background: transparent; color: var(--ink); }
   ol.suggestions { list-style: none; margin: 0; padding: 0; }
   ol.suggestions .from { color: var(--quiet); }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+          margin: 0 0 14px; background: color-mix(in srgb, CanvasText 4%, transparent); }
+  .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+                color: var(--quiet); margin: 0 0 7px; }
+  .labels { display: flex; flex-wrap: wrap; gap: 5px 8px; font-size: 12px; }
+  .labels span { color: var(--ink); }
+  .labels b { color: var(--quiet); font-weight: 500; }
   ol.suggestions li { padding: 9px 0; border-top: 1px solid var(--line); }
   ol.suggestions .name { font-weight: 600; }
   ol.suggestions .why { font-size: 12px; color: var(--quiet); }
@@ -574,6 +583,7 @@ PAGE = """<!doctype html>
 <script>
 const DATA = __PAYLOAD__;
 const byKey = new Map(DATA.clusters.map(c => [c.key, c]));
+const labelOf = new Map(DATA.candidates.map(c => [c.name, c]));
 const bubbles = [...document.querySelectorAll('.bubble')];
 const edges = [...document.querySelectorAll('.edge')];
 const scope = document.getElementById('scope');
@@ -616,33 +626,50 @@ function emphasise() {
   }
 }
 
-// One cluster is asked a simple question: what does it point at. Two or more are
-// asked something else, and answering it with one cluster's private list is not
-// an answer. So a selection of several shows only what more than one of them
-// points at, and shows nothing at all when that is empty.
-function combined() {
-  const totals = new Map();
-  for (const key of picked) {
-    const c = byKey.get(key);
-    if (!c) continue;
-    for (const s of c.suggestions) {
-      const row = totals.get(s.name) ||
-        { name: s.name, pointers: 0, styles: s.styles, via: s.via, fromKeys: [], from: [] };
-      row.pointers += s.agreement;
-      if (!row.fromKeys.includes(c.key)) {
-        row.fromKeys.push(c.key);
-        row.from.push(c.label);
-      }
-      totals.set(s.name, row);
+// One cluster asks what it points at; several ask what they all point at. Every
+// candidate carries the clusters that point at it, so this is a filter over one
+// list rather than an intersection of lists that were cut before the question
+// was known.
+function selectedCandidates() {
+  const need = picked.size > 1 ? 2 : 1;
+  const rows = [];
+  for (const candidate of DATA.candidates) {
+    const hits = [];
+    for (const key in candidate.clusters) {
+      if (picked.has(Number(key))) hits.push(Number(key));
+    }
+    if (hits.length < need) continue;
+    let pointers = 0;
+    for (const key of hits) pointers += candidate.clusters[String(key)] || 0;
+    rows.push({
+      name: candidate.name,
+      styles: candidate.styles,
+      hits: hits,
+      from: hits.map(key => (byKey.get(key) || {}).label || String(key)),
+      pointers: pointers,
+    });
+  }
+  rows.sort((a, b) => b.hits.length - a.hits.length || b.pointers - a.pointers);
+  return rows;
+}
+
+// Where this area's music is released. The labels on the selected clusters' own
+// artists say what the area is signed to; the labels on the candidates say where
+// the suggestions come from.
+function topLabels(rows, chosen) {
+  const tally = new Map();
+  for (const cluster of chosen) {
+    for (const entry of (cluster.labels || [])) {
+      tally.set(entry.name, (tally.get(entry.name) || 0) + entry.n);
     }
   }
-  const rows = [...totals.values()];
-  if (picked.size < 2) {
-    return rows.sort((a, b) => b.pointers - a.pointers);
+  for (const row of rows) {
+    const candidate = labelOf.get(row.name);
+    if (candidate) for (const name of candidate.labels) {
+      tally.set(name, (tally.get(name) || 0) + 1);
+    }
   }
-  return rows
-    .filter(r => r.fromKeys.length > 1)
-    .sort((a, b) => b.fromKeys.length - a.fromKeys.length || b.pointers - a.pointers);
+  return [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8);
 }
 
 function renderPanel() {
@@ -676,7 +703,7 @@ function renderPanel() {
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
     esc(c.label) + ' ×</button>').join('');
-  const rows = combined();
+  const rows = selectedCandidates();
   const suggest = s => {
     const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
     const where = s.from.length > 1
@@ -684,9 +711,14 @@ function renderPanel() {
       : ' from ' + esc(s.from[0] || '');
     return '<li><div class="name">' + esc(s.name) + '</div>' +
       '<div class="why">' + s.pointers + ' pointing artists' + where +
-      (s.via ? ' · ' + esc(s.via) : '') + '</div>' +
-      (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
+      '</div>' + (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
   };
+  const labels = topLabels(rows, chosen);
+  const card = labels.length
+    ? '<div class="card"><p class="card-title">Publishing labels here</p><div class="labels">' +
+      labels.map(([name, n]) => '<span>' + esc(name) + ' <b>' + n + '</b></span>').join('') +
+      '</div></div>'
+    : '';
   let body;
   if (rows.length) {
     body = '<ol class="suggestions">' + rows.slice(0, 40).map(suggest).join('') + '</ol>';
@@ -698,7 +730,7 @@ function renderPanel() {
     body = '<p class="empty">Nothing reaches this cluster yet. Expanding from it ' +
       'would find candidates.</p>';
   }
-  scope.innerHTML = head + '<div class="picked">' + chips + '</div>' + body;
+  scope.innerHTML = head + card + '<div class="picked">' + chips + '</div>' + body;
   for (const button of scope.querySelectorAll('[data-drop]')) {
     button.addEventListener('click', () => {
       picked.delete(Number(button.dataset.drop));
@@ -814,9 +846,14 @@ renderPanel();
 """
 
 
-def render_page(title: str, clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> str:
+def render_page(
+    title: str,
+    clusters: list[Cluster],
+    edges: list[tuple[int, int, int]],
+    candidates: list[dict],
+) -> str:
     return (
         PAGE.replace("__TITLE__", html.escape(title))
         .replace("__SVG__", _cluster_svg(clusters, edges))
-        .replace("__PAYLOAD__", _payload(clusters))
+        .replace("__PAYLOAD__", _payload(clusters, candidates))
     )
