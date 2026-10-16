@@ -272,14 +272,22 @@ def run(
 
 @app.command()
 def expand(
-    seeds: int = typer.Option(25, "--seeds", help="How many bridge artists to expand from."),
+    per_cluster: int = typer.Option(
+        3, "--per-cluster", help="Most central members to take from each taste cluster."
+    ),
     per_seed: int = typer.Option(20, "--per-seed", help="Similar artists to ask for per seed."),
     min_degree: int = typer.Option(2, "--min-degree", help="Minimum seed degree."),
+    genre: str = typer.Option(
+        "",
+        "--genre",
+        help="Only expand from seeds carrying one of these tags, comma separated. "
+        "For example: electronic,techno,house.",
+    ),
     min_score: float = typer.Option(
         0.0, "--min-score", help="Ignore matches weaker than this."
     ),
 ) -> None:
-    """Expand from your bridge artists to artists you do not have."""
+    """Expand from the centre of each taste cluster to artists you do not have."""
     settings = _settings([])
     if not settings.lastfm_api_key:
         typer.echo("set LASTFM_API_KEY in .env", err=True)
@@ -287,13 +295,22 @@ def expand(
 
     with store.connect(settings) as driver:
         database = settings.neo4j_database
-        seed_rows = query.bridge_candidates(driver, database, seeds, min_degree, 0.0)
+        seed_rows = query.seed_artists(driver, database, per_cluster, min_degree)
         known = set(query.corpus_keys(driver, database))
     if not seed_rows:
-        typer.echo("no bridge artists: run `discolab derive` first", err=True)
+        typer.echo("no seeds: run `discolab derive` first", err=True)
         raise typer.Exit(code=2)
 
     expander = LastfmSimilarExpander(settings.lastfm_api_key, per_seed)
+    wanted = {tag.strip().casefold() for tag in genre.split(",") if tag.strip()}
+    if wanted:
+        seed_rows = _filter_seeds_by_genre(expander, seed_rows, wanted)
+        typer.echo(f"seeds tagged {', '.join(sorted(wanted))}: {len(seed_rows)}")
+        if not seed_rows:
+            typer.echo("no seed carried any of those tags", err=True)
+            raise typer.Exit(code=2)
+    typer.echo(f"expanding from {len(seed_rows)} seeds across taste clusters")
+
     found = 0
     already = 0
     # One row per seed and artist, so that several seeds agreeing on the same
@@ -330,6 +347,20 @@ def expand(
     typer.echo(f"suggestions from {len(seed_rows)} seeds: {found}")
     typer.echo(f"already in the corpus: {already} ({share})")
     typer.echo(f"new artists written: {written}")
+
+
+def _filter_seeds_by_genre(
+    expander: LastfmSimilarExpander, seed_rows: list[dict], wanted: set[str]
+) -> list[dict]:
+    """Keep the seeds Last.fm tags with one of the wanted genres."""
+    kept: list[dict] = []
+    for position, seed in enumerate(seed_rows, start=1):
+        tags = {tag.casefold() for tag in expander.tags(seed["name"])}
+        if tags & wanted:
+            kept.append(seed)
+        if position % 50 == 0:
+            typer.echo(f"  tagged {position}/{len(seed_rows)}", err=True)
+    return kept
 
 
 def _explain_empty(driver, database: str) -> None:

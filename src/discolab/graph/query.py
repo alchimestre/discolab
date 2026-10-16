@@ -86,6 +86,34 @@ def corpus_keys(driver: Driver, database: str) -> list[str]:
     return [record["key"] for record in records]
 
 
+def seed_artists(
+    driver: Driver, database: str, per_community: int = 3, min_degree: int = 2
+) -> list[dict]:
+    """The most central members of each taste cluster, to expand from.
+
+    Taking the top bridges alone concentrates the seeds in whichever island is
+    largest. One artist per cluster keeps them spread across the taste, which
+    is what makes two unrelated areas agreeing on a name mean something.
+    """
+    records = driver.execute_query(
+        """
+        MATCH (a:Artist)
+        WHERE coalesce(a.external, false) = false
+          AND a.community >= 0 AND coalesce(a.degree, 0) >= $min_degree
+        WITH a.community AS community, a
+        ORDER BY a.degree DESC, a.name
+        WITH community, collect(a)[0..$per_community] AS members
+        UNWIND members AS m
+        RETURN m.key AS key, m.name AS name, m.community AS community, m.degree AS degree
+        ORDER BY community, degree DESC
+        """,
+        per_community=per_community,
+        min_degree=min_degree,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def artist_keys(driver: Driver, database: str) -> list[str]:
     records = driver.execute_query(
         "MATCH (a:Artist) RETURN a.key AS key", database_=database

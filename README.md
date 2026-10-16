@@ -27,7 +27,8 @@ Neo4j Browser is at `http://localhost:7474`.
 | `discolab derive [--resolution F] [--min-artists N] [--max-artists N]` | Build artist edges, communities, islands, bridge scores |
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
 | `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
-| `discolab check [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
+| `discolab expand [--per-cluster N] [--per-seed N] [--genre TAGS]` | Expand from cluster centres to artists you do not have |
+| `discolab check [--source bridge\|external] [--min-areas N] [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
 | `discolab votes [--path PATH]` | Summarise the ticks and read the criterion |
 | `discolab stats [--islands N]` | Node, edge and island counts |
 | `discolab reset --yes` | Delete every node and relationship |
@@ -160,6 +161,29 @@ Two limits come from Spotify rather than from here.
 A development-mode app can read its own playlists but not the contents of a public playlist owned by someone else. Those return 403 on their items, and the count of them is reported at ingest instead of being skipped silently. Reading them needs Extended Quota review. Playlists you own are unaffected.
 
 The playlist contents endpoint is `/playlists/{id}/items`; `/tracks` was withdrawn and now returns 403. Playlist entries wrap the track under `item`, while saved tracks use `track`, and both are read.
+
+## Expanding beyond your own music
+
+Ranking artists that bridge the graph only returns artists you already have, because every node came from your own data. Those bridges are seeds, not answers.
+
+`discolab expand` takes the most central member of each taste cluster, asks Last.fm for similar artists, and writes the ones you do not have as external nodes.
+
+```
+uv run discolab expand --per-cluster 3
+uv run discolab expand --per-cluster 3 --genre "electronic,techno,house,psytrance"
+```
+
+`--per-cluster` takes the top artists of every cluster rather than the loudest artists overall, so the seeds spread across the whole taste instead of concentrating in the largest island. `--genre` reads each seed's Last.fm tags and drops the seeds that carry none of the listed ones, which is how to point the whole pipeline at one kind of music.
+
+Then build the page from those artists rather than from your own:
+
+```
+uv run discolab check --source external
+```
+
+One seed suggesting an artist says almost nothing, and that is most of a similarity list. Several seeds agreeing says more, and seeds in different clusters agreeing says most. The page is ordered by how many seeds agree, most first, and shows how many areas they came from.
+
+Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the page.
 
 ## Known limits
 

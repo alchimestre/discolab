@@ -26,6 +26,9 @@ USER_AGENT = (
 )
 SEARCH_TIMEOUT = 20.0
 MAX_VIDEOS_PER_ARTIST = 10
+# The pool stays large so a blocked upload has somewhere to go; the list shown
+# is short, or it crowds out the text beside it.
+MAX_ALTERNATIVES_SHOWN = 3
 
 # A set, mix or full album upload is not what a name search should return first.
 SET_PATTERNS = re.compile(
@@ -124,7 +127,7 @@ def resolve_artist(
     An artist with no official upload yields nothing, which is better than
     embedding a fan re-upload.
     """
-    queries = [f"{name} - Topic", name]
+    queries = [f"{name} - Topic", f"{name} official audio", name]
     queries.extend(f"{name} {title}" for title in owned_titles[:3])
     owned_keys = [key for key in (normalise(title) for title in owned_titles) if key]
 
@@ -161,14 +164,37 @@ def is_track(video: Video) -> bool:
     return True
 
 
+# A channel that is the artist plus one of these is still the artist's channel.
+CHANNEL_SUFFIXES = frozenset(
+    {
+        "topic", "official", "officialaudio", "officialvideo", "officialartist",
+        "vevo", "music", "musica", "records", "recordings", "band", "dj", "tv",
+        "hq", "musicvideo", "label", "sound", "audio",
+    }
+)
+
+
+def _channel_is_artist(channel_key: str, artist_key: str) -> bool:
+    """True when the channel is the artist, not merely a name containing them.
+
+    Containment alone let Carrier Europe, a vehicle company, pass as the
+    musician Carrier. The channel has to be the name, optionally followed by a
+    word such as Official or Topic.
+    """
+    if not channel_key or not artist_key or not channel_key.startswith(artist_key):
+        return False
+    rest = channel_key[len(artist_key) :].strip()
+    return not rest or rest.replace(" ", "") in CHANNEL_SUFFIXES
+
+
 def official_rank(video: Video, artist: str) -> int | None:
     """How official an upload is, lower being better, or None to reject it.
 
     Fan re-uploads and aggregator channels are the common case in a name
     search, so an unverified channel has to be the artist's own. A verified
-    channel is not enough either: verified businesses re-upload anything, so a
-    title that merely opens with the artist's name is ranked last. That is how
-    a Mexican song also called El Buho outranked the artist himself.
+    channel is not enough either: verified businesses re-upload anything, so
+    the title has to read as "artist - track" rather than merely open with the
+    artist's name, which is how "Carrier Montluel" passed as Carrier.
     """
     key = normalise(artist)
     if not key:
@@ -177,12 +203,14 @@ def official_rank(video: Video, artist: str) -> int | None:
     title = normalise(video.title)
     if channel.endswith("topic"):
         stem = channel[: -len("topic")].strip()
-        if key in stem:
+        if _channel_is_artist(stem, key):
             return 1
         return 2 if title.startswith(key) else None
-    if key in channel:
+    if _channel_is_artist(channel, key):
         return 0
-    if video.verified and title.startswith(key):
+    if video.verified and re.match(
+        rf"^\s*{re.escape(artist)}\s*[-–—:|·(]", video.title, re.IGNORECASE
+    ):
         return 3
     return None
 
@@ -371,13 +399,22 @@ def build_page(
 <title>{html.escape(title)}</title>
 <style>
   :root {{ color-scheme: light dark; }}
-  body {{ font: 15px/1.5 system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 24px; }}
+  body {{ font: 15px/1.5 system-ui, sans-serif; max-width: 1080px; margin: 0 auto; padding: 24px; }}
   h1 {{ font-size: 20px; }}
-  h2 {{ font-size: 17px; margin: 32px 0 4px; }}
+  h2 {{ font-size: 17px; margin: 0 0 4px; }}
   h2 small {{ font-weight: 400; opacity: .65; font-size: 13px; }}
   ul {{ margin: 6px 0 0; padding-left: 20px; }}
   li {{ font-size: 13px; opacity: .85; }}
-  iframe {{ width: 100%; max-width: 560px; aspect-ratio: 16/9; border: 0; margin-top: 8px; }}
+  section {{ display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px;
+             align-items: start; padding: 16px 0;
+             border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }}
+  .media {{ position: sticky; top: 64px; }}
+  .media .keep {{ margin-top: 8px; }}
+  iframe {{ width: 100%; aspect-ratio: 16/9; border: 0; border-radius: 4px; }}
+  @media (max-width: 760px) {{
+    section {{ grid-template-columns: 1fr; }}
+    .media {{ position: static; }}
+  }}
   .links a {{ font-size: 13px; margin-right: 10px; }}
   .video-title {{ font-size: 13px; opacity: .7; margin: 4px 0 0; }}
   .tag {{ display: inline-block; font-size: 11px; padding: 0 5px; border-radius: 8px;
@@ -550,8 +587,9 @@ def _section(
             {"id": video.video_id, "label": video.label, "state": label, "cls": css}
         )
     data_videos = html.escape(json.dumps(playlist, ensure_ascii=False), quote=True)
-    parts = [
-        f'<section data-videos="{data_videos}">',
+
+    info = [
+        '<div class="info">',
         f"<h2>{index}. {html.escape(candidate.name)} <small>{_provenance(candidate)}</small></h2>",
         '<p class="links">'
         f'<a href="https://open.spotify.com/search/{query}">Spotify</a>'
@@ -562,51 +600,55 @@ def _section(
         "</p>",
     ]
 
-    primary = videos[0] if videos else None
-    if primary is not None:
-        tag, css = tag_for(primary, candidate.known_titles, keys)
-        parts.append(
-            f'<div class="player"><iframe class="yt" src="{primary.embed_url}" '
-            'loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; '
-            'picture-in-picture" allowfullscreen></iframe></div>'
-        )
-        parts.append(
-            '<div class="fallback" hidden>'
-            f'<a href="{primary.watch_url}">'
-            f'<img src="{primary.thumbnail_url}" alt="" loading="lazy"></a>'
-            "<p class=\"fallback-note\">This uploader blocks embedding.</p>"
-            "</div>"
-        )
-        parts.append(
-            f'<p class="video-title"><span class="tag {css}">{tag}</span> '
-            f'<span class="playing">{html.escape(primary.label)}</span></p>'
-        )
-    else:
-        parts.append(
-            '<p class="video-title">nothing resolved, use the YouTube search link above</p>'
-        )
-
-    alternatives = videos[1:]
+    alternatives = videos[1:1 + MAX_ALTERNATIVES_SHOWN]
     if alternatives:
         items = "".join(
             f'<li><a href="{video.watch_url}">{html.escape(video.label)}</a></li>'
             for video in alternatives
         )
-        parts.append(f'<ul class="alts">Other uploads: {items}</ul>')
+        info.append(f'<ul class="alts">Other uploads: {items}</ul>')
 
     if candidate.tracks:
         items = "".join(
             f"<li>{html.escape(track['title'])} &middot; {html.escape(track['path'])}</li>"
             for track in candidate.tracks
         )
-        parts.append(f"<ul>{items}</ul>")
+        info.append(f"<ul>{items}</ul>")
+    info.append("</div>")
 
+    media = ['<div class="media">']
+    primary = videos[0] if videos else None
+    if primary is not None:
+        tag, css = tag_for(primary, candidate.known_titles, keys)
+        media.append(
+            f'<div class="player"><iframe class="yt" src="{primary.embed_url}" '
+            'loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; '
+            'picture-in-picture" allowfullscreen></iframe></div>'
+        )
+        media.append(
+            '<div class="fallback" hidden>'
+            f'<a href="{primary.watch_url}">'
+            f'<img src="{primary.thumbnail_url}" alt="" loading="lazy"></a>'
+            "<p class=\"fallback-note\">This uploader blocks embedding.</p>"
+            "</div>"
+        )
+        media.append(
+            f'<p class="video-title"><span class="tag {css}">{tag}</span> '
+            f'<span class="playing">{html.escape(primary.label)}</span></p>'
+        )
+    else:
+        media.append(
+            '<p class="video-title">nothing resolved, use the YouTube link on the left</p>'
+        )
     checked = " checked" if vote.get("kept") else ""
-    parts.append(
+    media.append(
         f'<label class="keep"><input type="checkbox" class="keep"{checked}> keep</label>'
     )
-    parts.append("</section>")
-    return "\n".join(parts)
+    media.append("</div>")
+
+    return "\n".join(
+        [f'<section data-videos="{data_videos}">'] + info + media + ["</section>"]
+    )
 
 
 def load_video_cache(path: Path) -> dict[str, list[Video]]:

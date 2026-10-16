@@ -40,6 +40,32 @@ class LastfmSimilarExpander:
         self.api_key = api_key
         self.per_seed = per_seed
 
+    def tags(self, artist: str) -> list[str]:
+        """Top tags, which is the only genre signal Last.fm exposes."""
+        params = {
+            "method": "artist.gettoptags",
+            "artist": artist,
+            "api_key": self.api_key,
+            "format": "json",
+            "autocorrect": 1,
+        }
+        url = API_ROOT + "?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(url, headers={"User-Agent": "discolab/0.1"})
+        time.sleep(REQUEST_INTERVAL)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+        except Exception:
+            return []
+        if "error" in payload:
+            return []
+        found = payload.get("toptags", {}).get("tag", [])
+        return [
+            item.get("name", "")
+            for item in found
+            if item.get("name") and float(item.get("count", 0) or 0) > 0
+        ]
+
     def similar(self, artist: str) -> list[Suggestion]:
         params = {
             "method": "artist.getsimilar",
