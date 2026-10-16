@@ -86,6 +86,8 @@ class Candidate:
     videos: tuple[Video, ...]
     tracks: tuple[dict, ...]
     known_titles: tuple[tuple[str, int], ...] = ()
+    seeds: tuple[str, ...] = ()
+    external: bool = False
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -520,6 +522,17 @@ def build_page(
 """
 
 
+def _provenance(candidate: Candidate) -> str:
+    """Say where the artist came from, since the two sources mean different things."""
+    if candidate.external:
+        via = ", ".join(candidate.seeds[:3]) or "unknown seed"
+        return f"not in your library · from {html.escape(via)} · match {candidate.bridge_score:.2f}"
+    return (
+        f"island {candidate.component} of {candidate.component_size} artists, "
+        f"degree {candidate.degree}, bridge {candidate.bridge_score:.5f}"
+    )
+
+
 def _section(
     index: int, candidate: Candidate, keys: Sequence[str], vote: dict
 ) -> str:
@@ -534,9 +547,7 @@ def _section(
     data_videos = html.escape(json.dumps(playlist, ensure_ascii=False), quote=True)
     parts = [
         f'<section data-videos="{data_videos}">',
-        f"<h2>{index}. {html.escape(candidate.name)} "
-        f"<small>island {candidate.component} of {candidate.component_size} artists, "
-        f"degree {candidate.degree}, bridge {candidate.bridge_score:.5f}</small></h2>",
+        f"<h2>{index}. {html.escape(candidate.name)} <small>{_provenance(candidate)}</small></h2>",
         '<p class="links">'
         f'<a href="https://open.spotify.com/search/{query}">Spotify</a>'
         f'<a href="https://www.youtube.com/results?search_query={query}">YouTube</a>'

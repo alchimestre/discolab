@@ -73,6 +73,39 @@ def islands(driver: Driver, database: str, limit: int = 8, sample: int = 6) -> l
     return [dict(record) for record in records]
 
 
+def artist_keys(driver: Driver, database: str) -> list[str]:
+    records = driver.execute_query(
+        "MATCH (a:Artist) RETURN a.key AS key", database_=database
+    ).records
+    return [record["key"] for record in records]
+
+
+def external_candidates(
+    driver: Driver, database: str, limit: int = 25, min_score: float = 0.0
+) -> list[dict]:
+    """Artists from outside the corpus, ranked by how strong a seed led to them.
+
+    Weighted by the seed's bridge score as well as the match, so an artist
+    reached from a bridge you actually sit between outranks one reached from a
+    peripheral artist with a high similarity score.
+    """
+    records = driver.execute_query(
+        """
+        MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
+        WHERE coalesce(e.external, false) = true AND r.score >= $min_score
+        WITH e, max(r.score * (coalesce(s.bridge_score, 0.0) + 0.001)) AS weight,
+             max(r.score) AS best_score, collect(DISTINCT s.name)[0..4] AS seeds
+        RETURN e.key AS key, e.name AS name, weight, best_score, seeds
+        ORDER BY best_score DESC, weight DESC
+        LIMIT $limit
+        """,
+        min_score=min_score,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def library_titles(driver: Driver, database: str) -> list[str]:
     records = driver.execute_query(
         "MATCH (t:Track) RETURN DISTINCT t.title AS title",

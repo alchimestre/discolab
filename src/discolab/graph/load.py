@@ -48,6 +48,27 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
+def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Create suggested artists, marked external, and the edge from their seed."""
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MERGE (e:Artist {key: row.key})
+            SET e.name = row.name, e.external = true
+            WITH e, row
+            MATCH (s:Artist {key: row.seed_key})
+            MERGE (s)-[r:SIMILAR_TO]->(e)
+            SET r.score = row.score, r.source = row.source
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    return len(rows)
+
+
 def _write_nodes(
     driver: Driver, database: str, label: str, rows: Sequence[dict[str, Any]]
 ) -> None:

@@ -24,6 +24,7 @@ from .check import (
     write_page,
 )
 from .config import Settings, load_env_file
+from .expand import LastfmSimilarExpander
 from .graph import derive, load, query, store
 from .model import RawTrack
 from .providers import (
@@ -34,7 +35,7 @@ from .providers import (
     SpotifyError,
     SpotifyProvider,
 )
-from .resolve import build_catalog
+from .resolve import build_catalog, normalise
 
 app = typer.Typer(add_completion=False, help="Taste graph over local music metadata.")
 
@@ -269,6 +270,65 @@ def run(
     candidates(limit=limit, min_degree=min_degree, min_bridge=0.0, tracks=True)
 
 
+@app.command()
+def expand(
+    seeds: int = typer.Option(25, "--seeds", help="How many bridge artists to expand from."),
+    per_seed: int = typer.Option(20, "--per-seed", help="Similar artists to ask for per seed."),
+    min_degree: int = typer.Option(2, "--min-degree", help="Minimum seed degree."),
+    min_score: float = typer.Option(
+        0.0, "--min-score", help="Ignore matches weaker than this."
+    ),
+) -> None:
+    """Expand from your bridge artists to artists you do not have."""
+    settings = _settings([])
+    if not settings.lastfm_api_key:
+        typer.echo("set LASTFM_API_KEY in .env", err=True)
+        raise typer.Exit(code=2)
+
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        seed_rows = query.bridge_candidates(driver, database, seeds, min_degree, 0.0)
+        known = set(query.artist_keys(driver, database))
+    if not seed_rows:
+        typer.echo("no bridge artists: run `discolab derive` first", err=True)
+        raise typer.Exit(code=2)
+
+    expander = LastfmSimilarExpander(settings.lastfm_api_key, per_seed)
+    found = 0
+    already = 0
+    fresh: dict[str, dict] = {}
+    for position, seed in enumerate(seed_rows, start=1):
+        for suggestion in expander.similar(seed["name"]):
+            found += 1
+            key = normalise(suggestion.name)
+            if not key:
+                continue
+            if key in known:
+                already += 1
+                continue
+            if suggestion.score < min_score:
+                continue
+            current = fresh.get(key)
+            if current is None or suggestion.score > current["score"]:
+                fresh[key] = {
+                    "key": key,
+                    "name": suggestion.name,
+                    "seed_key": seed["key"],
+                    "seed": seed["name"],
+                    "score": suggestion.score,
+                    "source": expander.source,
+                }
+        typer.echo(f"  expanded {position}/{len(seed_rows)}", err=True)
+
+    with store.connect(settings) as driver:
+        written = load.write_expansion(driver, settings.neo4j_database, list(fresh.values()))
+
+    share = f"{already / found:.0%}" if found else "n/a"
+    typer.echo(f"suggestions from {len(seed_rows)} seeds: {found}")
+    typer.echo(f"already in the corpus: {already} ({share})")
+    typer.echo(f"new artists written: {written}")
+
+
 def _explain_empty(driver, database: str) -> None:
     summary = query.stats(driver, database)
     typer.echo("no candidates.")
@@ -391,6 +451,11 @@ def check(
     votes: Path = typer.Option(
         Path("out/votes.json"), "--votes", help="Where the ticks are saved."
     ),
+    source: str = typer.Option(
+        "bridge",
+        "--source",
+        help="bridge ranks your own artists; external lists artists you do not have.",
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -404,12 +469,20 @@ def check(
     settings = _settings([])
     with store.connect(settings) as driver:
         database = settings.neo4j_database
-        rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
+        if source == "external":
+            rows = query.external_candidates(driver, database, limit)
+        else:
+            rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
         if not rows:
             _explain_empty(driver, database)
+            if source == "external":
+                typer.echo("  for external candidates run `discolab expand` first")
             raise typer.Exit(code=0)
-        owned = query.owned_tracks_for(
-            driver, database, [row["key"] for row in rows], max(tracks, 40)
+        keys = [row["key"] for row in rows]
+        owned = (
+            query.owned_tracks_for(driver, database, keys, max(tracks, 40))
+            if source == "bridge"
+            else {}
         )
         titles = query.library_titles(driver, database)
 
@@ -430,16 +503,18 @@ def check(
     candidates = [
         Candidate(
             name=row["name"],
-            community=row["community"],
-            component=row["component"],
-            component_size=row["component_size"],
-            degree=row["degree"],
-            bridge_score=row["bridge_score"],
+            community=row.get("community", 0),
+            component=row.get("component", 0),
+            component_size=row.get("component_size", 0),
+            degree=row.get("degree", 0),
+            bridge_score=row.get("bridge_score", row.get("weight", 0.0)),
             videos=tuple(videos.get(row["name"], ())),
             tracks=tuple(owned.get(row["key"], [])[:tracks]),
             known_titles=tuple(
                 (track["title"], track["plays"]) for track in owned.get(row["key"], [])
             ),
+            seeds=tuple(row.get("seeds", ())),
+            external=source == "external",
         )
         for row in rows
     ]
