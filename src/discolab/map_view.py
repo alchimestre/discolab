@@ -346,12 +346,12 @@ def assign_names(clusters: list[Cluster]) -> None:
             # Nothing here describes a fifth of the cluster, so it has no name of
             # its own. Say that, and name its largest labels, which keeps it
             # distinct without claiming any of them covers the cluster.
-            for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:6]:
+            for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:14]:
                 options.append((f"mixed · {name}", name))
         # Before falling back to a number: the name the cluster would have had if
         # the stronger ones were free, marked as not describing it. A number tells
         # the reader nothing at all, and eleven clusters were reaching that.
-        for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:4]:
+        for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:14]:
             options.append((f"mixed · {name}", name))
         options.append((f"cluster {cluster.key}", cluster.family))
         cluster.options = options
