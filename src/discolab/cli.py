@@ -288,7 +288,7 @@ def expand(
     with store.connect(settings) as driver:
         database = settings.neo4j_database
         seed_rows = query.bridge_candidates(driver, database, seeds, min_degree, 0.0)
-        known = set(query.artist_keys(driver, database))
+        known = set(query.corpus_keys(driver, database))
     if not seed_rows:
         typer.echo("no bridge artists: run `discolab derive` first", err=True)
         raise typer.Exit(code=2)
@@ -296,7 +296,9 @@ def expand(
     expander = LastfmSimilarExpander(settings.lastfm_api_key, per_seed)
     found = 0
     already = 0
-    fresh: dict[str, dict] = {}
+    # One row per seed and artist, so that several seeds agreeing on the same
+    # artist survives to the graph. Keying by artist alone lost the agreement.
+    fresh: dict[tuple[str, str], dict] = {}
     for position, seed in enumerate(seed_rows, start=1):
         for suggestion in expander.similar(seed["name"]):
             found += 1
@@ -308,9 +310,10 @@ def expand(
                 continue
             if suggestion.score < min_score:
                 continue
-            current = fresh.get(key)
+            pair = (key, seed["key"])
+            current = fresh.get(pair)
             if current is None or suggestion.score > current["score"]:
-                fresh[key] = {
+                fresh[pair] = {
                     "key": key,
                     "name": suggestion.name,
                     "seed_key": seed["key"],
@@ -456,6 +459,11 @@ def check(
         "--source",
         help="bridge ranks your own artists; external lists artists you do not have.",
     ),
+    min_areas: int = typer.Option(
+        0,
+        "--min-areas",
+        help="Require this many separate taste areas to agree. 2 is the useful setting.",
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -470,7 +478,7 @@ def check(
     with store.connect(settings) as driver:
         database = settings.neo4j_database
         if source == "external":
-            rows = query.external_candidates(driver, database, limit)
+            rows = query.external_candidates(driver, database, limit, min_areas)
         else:
             rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
         if not rows:
@@ -513,8 +521,10 @@ def check(
             known_titles=tuple(
                 (track["title"], track["plays"]) for track in owned.get(row["key"], [])
             ),
-            seeds=tuple(row.get("seeds", ())),
+            seeds=tuple(row.get("seed_names", ())),
             external=source == "external",
+            seed_count=row.get("seed_count", 0),
+            areas=row.get("areas", 0),
         )
         for row in rows
     ]

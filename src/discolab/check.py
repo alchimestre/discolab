@@ -88,6 +88,8 @@ class Candidate:
     known_titles: tuple[tuple[str, int], ...] = ()
     seeds: tuple[str, ...] = ()
     external: bool = False
+    seed_count: int = 0
+    areas: int = 0
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -526,7 +528,10 @@ def _provenance(candidate: Candidate) -> str:
     """Say where the artist came from, since the two sources mean different things."""
     if candidate.external:
         via = ", ".join(candidate.seeds[:3]) or "unknown seed"
-        return f"not in your library · from {html.escape(via)} · match {candidate.bridge_score:.2f}"
+        return (
+            f"not in your library · {candidate.seed_count} seed(s) across "
+            f"{candidate.areas} area(s) · via {html.escape(via)}"
+        )
     return (
         f"island {candidate.component} of {candidate.component_size} artists, "
         f"degree {candidate.degree}, bridge {candidate.bridge_score:.5f}"

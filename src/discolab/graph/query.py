@@ -73,6 +73,19 @@ def islands(driver: Driver, database: str, limit: int = 8, sample: int = 6) -> l
     return [dict(record) for record in records]
 
 
+def corpus_keys(driver: Driver, database: str) -> list[str]:
+    """Keys of artists from the user's own data.
+
+    Expansion output is excluded, or the second run would treat its own
+    suggestions as things the user already has.
+    """
+    records = driver.execute_query(
+        "MATCH (a:Artist) WHERE coalesce(a.external, false) = false RETURN a.key AS key",
+        database_=database,
+    ).records
+    return [record["key"] for record in records]
+
+
 def artist_keys(driver: Driver, database: str) -> list[str]:
     records = driver.execute_query(
         "MATCH (a:Artist) RETURN a.key AS key", database_=database
@@ -81,25 +94,32 @@ def artist_keys(driver: Driver, database: str) -> list[str]:
 
 
 def external_candidates(
-    driver: Driver, database: str, limit: int = 25, min_score: float = 0.0
+    driver: Driver, database: str, limit: int = 25, min_areas: int = 0
 ) -> list[dict]:
-    """Artists from outside the corpus, ranked by how strong a seed led to them.
+    """Artists from outside the corpus, ranked by how many seeds agree on them.
 
-    Weighted by the seed's bridge score as well as the match, so an artist
-    reached from a bridge you actually sit between outranks one reached from a
-    peripheral artist with a high similarity score.
+    One seed suggesting an artist says almost nothing, which is the bulk of a
+    similarity list. Several seeds agreeing says more, and seeds sitting in
+    different communities of the graph agreeing says most: unrelated parts of
+    the taste pointing at the same name is the signal worth listening to.
     """
     records = driver.execute_query(
         """
         MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
-        WHERE coalesce(e.external, false) = true AND r.score >= $min_score
-        WITH e, max(r.score * (coalesce(s.bridge_score, 0.0) + 0.001)) AS weight,
-             max(r.score) AS best_score, collect(DISTINCT s.name)[0..4] AS seeds
-        RETURN e.key AS key, e.name AS name, weight, best_score, seeds
-        ORDER BY best_score DESC, weight DESC
+        WHERE coalesce(e.external, false) = true
+        WITH e,
+             count(DISTINCT s) AS seed_count,
+             count(DISTINCT s.community) AS areas,
+             avg(r.score) AS mean_score,
+             max(r.score) AS best_score,
+             collect(DISTINCT s.name)[0..4] AS seed_names
+        WHERE areas >= $min_areas
+        RETURN e.key AS key, e.name AS name, seed_count, areas,
+               mean_score, best_score, seed_names
+        ORDER BY seed_count DESC, areas DESC, mean_score DESC
         LIMIT $limit
         """,
-        min_score=min_score,
+        min_areas=min_areas,
         limit=limit,
         database_=database,
     ).records
