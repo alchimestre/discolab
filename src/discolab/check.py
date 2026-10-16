@@ -342,11 +342,13 @@ def ordered_videos(candidate: Candidate, keys: Sequence[str] = ()) -> list[Video
 def build_page(
     candidates: Sequence[Candidate],
     library_titles: Sequence[str] = (),
+    votes: dict[str, dict] | None = None,
     title: str = "discolab checklist",
 ) -> str:
     keys = library_keys(library_titles)
+    saved = votes or {}
     sections = "\n".join(
-        _section(index, candidate, keys)
+        _section(index, candidate, keys, saved.get(candidate.name, {}))
         for index, candidate in enumerate(candidates, start=1)
     )
     with_embed = sum(1 for candidate in candidates if candidate.videos)
@@ -403,7 +405,25 @@ def build_page(
   const blocked = document.getElementById('blocked');
   let dead = 0;
 
-  function update() {{
+  function save() {{
+    const data = {{}};
+    document.querySelectorAll('section').forEach(function (s) {{
+      const heading = s.querySelector('h2').textContent.trim();
+      const name = heading.replace(/^\\d+\\.\\s*/, '').split(' island')[0].trim();
+      const tag = s.querySelector('.tag');
+      data[name] = {{
+        kept: s.querySelector('input.keep').checked,
+        state: tag ? tag.textContent : '',
+      }};
+    }});
+    fetch('/votes', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(data),
+    }}).catch(function () {{}});
+  }}
+
+  function render() {{
     const kept = boxes.filter(b => b.checked);
     label.textContent = kept.length + ' of ' + boxes.length;
     boxes.forEach(b => b.closest('section').classList.toggle('dead',
@@ -412,7 +432,14 @@ def build_page(
       ? dead + ' of ' + boxes.length + ' blocked by the uploader'
       : 'no embeds blocked';
   }}
+
+  function update() {{
+    render();
+    save();
+  }}
   boxes.forEach(b => b.addEventListener('change', update));
+  // Render only, so loading the page does not overwrite saved ticks with blanks.
+  render();
 
   function markDead(section) {{
     const player = section.querySelector('.player');
@@ -472,13 +499,14 @@ def build_page(
   const tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
-  update();
 </script>
 </html>
 """
 
 
-def _section(index: int, candidate: Candidate, keys: Sequence[str]) -> str:
+def _section(
+    index: int, candidate: Candidate, keys: Sequence[str], vote: dict
+) -> str:
     query = urllib.parse.quote(candidate.name)
     videos = ordered_videos(candidate, keys)
     playlist = []
@@ -541,7 +569,10 @@ def _section(index: int, candidate: Candidate, keys: Sequence[str]) -> str:
         )
         parts.append(f"<ul>{items}</ul>")
 
-    parts.append('<label class="keep"><input type="checkbox" class="keep"> keep</label>')
+    checked = " checked" if vote.get("kept") else ""
+    parts.append(
+        f'<label class="keep"><input type="checkbox" class="keep"{checked}> keep</label>'
+    )
     parts.append("</section>")
     return "\n".join(parts)
 
@@ -574,20 +605,53 @@ def write_page(content: str, path: Path) -> Path:
     return path
 
 
-class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+class _VoteHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
 
+    def do_POST(self) -> None:
+        votes_path = getattr(self.server, "votes_path", None)
+        if self.path.rstrip("/") != "/votes" or votes_path is None:
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_error(400)
+            return
+        votes_path.parent.mkdir(parents=True, exist_ok=True)
+        votes_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        self.send_response(204)
+        self.end_headers()
+
+
+def read_votes(path: Path) -> dict[str, dict]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
 
 def serve_directory(
-    directory: Path, filename: str, host: str = "127.0.0.1"
+    directory: Path,
+    filename: str,
+    votes_path: Path | None = None,
+    host: str = "127.0.0.1",
 ) -> tuple[str, http.server.ThreadingHTTPServer]:
     """Serve the page over http, not file.
 
     YouTube returns error 153 for embeds loaded from file:// because the
     request carries no referrer.
     """
-    handler = functools.partial(_QuietHandler, directory=str(directory))
-    server = http.server.ThreadingHTTPServer((host, 0), handler)
+    server = http.server.ThreadingHTTPServer(
+        (host, 0), functools.partial(_VoteHandler, directory=str(directory))
+    )
+    server.votes_path = votes_path
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return f"http://{host}:{server.server_port}/{filename}", server

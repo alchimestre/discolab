@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import typer
@@ -16,6 +17,7 @@ from .check import (
     Video,
     build_page,
     load_video_cache,
+    read_votes,
     resolve_artist,
     save_video_cache,
     serve_directory,
@@ -52,6 +54,11 @@ def ingest(
     scrobbles: int = typer.Option(
         20000, "--scrobbles", help="How much scrobble history to read."
     ),
+    months: int = typer.Option(
+        0,
+        "--months",
+        help="Only read the last N months of scrobbles, 0 for all history. Tastes move.",
+    ),
 ) -> None:
     """Read the configured providers and load observed nodes and edges into Neo4j."""
     settings = _settings(root)
@@ -75,9 +82,13 @@ def ingest(
             typer.echo("set LASTFM_API_KEY and LASTFM_USERNAME in .env", err=True)
             raise typer.Exit(code=2)
         typer.echo(f"last.fm: reading up to {scrobbles} scrobbles, this takes a few minutes...")
+        since = None
+        if months > 0:
+            since = datetime.now(timezone.utc) - timedelta(days=int(months * 30.44))
+            typer.echo(f"last.fm: only scrobbles since {since:%Y-%m-%d}")
         try:
             scrobble_scan = LastfmProvider(
-                settings.lastfm_api_key, settings.lastfm_username, scrobbles
+                settings.lastfm_api_key, settings.lastfm_username, scrobbles, since=since
             ).scan()
         except LastfmError as error:
             typer.echo(f"last.fm failed: {error}", err=True)
@@ -199,6 +210,33 @@ def stats(island_count: int = typer.Option(8, "--islands", help="Islands to list
     typer.echo("islands (largest first):")
     for island in island_rows:
         typer.echo(f"  {island['size']:4}  {', '.join(island['members'])}")
+
+
+@app.command()
+def votes(
+    path: Path = typer.Option(Path("out/votes.json"), "--path", help="Where the ticks are saved."),
+) -> None:
+    """Summarise the ticks from the listening page, and read the criterion."""
+    saved = read_votes(path)
+    if not saved:
+        typer.echo(f"no ticks recorded at {path} yet")
+        raise typer.Exit(code=0)
+
+    kept = {name: vote for name, vote in saved.items() if vote.get("kept")}
+    fresh = [name for name, vote in kept.items() if vote.get("state", "").startswith("new")]
+    held = [
+        name
+        for name, vote in kept.items()
+        if vote.get("state", "").startswith(("already", "played"))
+    ]
+    typer.echo(f"kept {len(kept)} of {len(saved)} candidates")
+    typer.echo(f"  new tracks: {len(fresh)}")
+    typer.echo(f"  already known: {len(held)}")
+    typer.echo(
+        "criterion met" if len(fresh) >= 3 else "criterion not met: fewer than 3 new tracks kept"
+    )
+    for name in sorted(kept):
+        typer.echo(f"    {kept[name].get('state', '?'):14} {name}")
 
 
 @app.command()
@@ -344,6 +382,9 @@ def check(
     refresh: bool = typer.Option(
         False, "--refresh", help="Ignore the cache and search again."
     ),
+    votes: Path = typer.Option(
+        Path("out/votes.json"), "--votes", help="Where the ticks are saved."
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -396,7 +437,7 @@ def check(
         )
         for row in rows
     ]
-    path = write_page(build_page(candidates, titles), out)
+    path = write_page(build_page(candidates, titles, read_votes(votes)), out)
     typer.echo(f"wrote {path}")
 
     if not serve:
@@ -405,7 +446,7 @@ def check(
             typer.echo("note: file:// pages cannot play the embeds, use --serve", err=True)
         return
 
-    url, server = serve_directory(path.parent, path.name)
+    url, server = serve_directory(path.parent, path.name, votes_path=votes)
     typer.echo(f"serving {url}")
     typer.echo("ctrl-c to stop")
     if open_browser:

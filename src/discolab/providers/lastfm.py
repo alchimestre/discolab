@@ -11,7 +11,7 @@ import json
 import time
 import urllib.parse
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from ..model import RawTrack
@@ -21,6 +21,8 @@ API_ROOT = "https://ws.audioscrobbler.com/2.0/"
 PAGE_SIZE = 200
 REQUEST_INTERVAL = 0.25
 MAX_PAGES = 500
+RETRIES = 4
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class LastfmError(RuntimeError):
@@ -39,16 +41,23 @@ class LastfmProvider:
         recent_limit: int = 20000,
         session_gap_minutes: int = 30,
         top_pages: int = 25,
+        since: datetime | None = None,
     ):
         self.api_key = api_key
         self.username = username
         self.recent_limit = recent_limit
         self.session_gap = timedelta(minutes=session_gap_minutes)
         self.top_pages = top_pages
+        self.since = since
 
     def scan(self) -> ScanResult:
-        plays = self._top_track_plays()
         scrobbles, skipped = self._recent_scrobbles()
+        if self.since is None:
+            plays = self._top_track_plays()
+        else:
+            # With a window, all-time top tracks would contradict it, so count
+            # the window instead.
+            plays = dict(Counter((artist, title) for _, artist, title in scrobbles))
 
         sessions = _sessions(scrobbles, self.session_gap)
         containers: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
@@ -81,15 +90,31 @@ class LastfmProvider:
         query.update(params)
         url = API_ROOT + "?" + urllib.parse.urlencode(query)
         request = urllib.request.Request(url, headers={"User-Agent": "discolab/0.1"})
-        time.sleep(REQUEST_INTERVAL)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                payload = json.loads(response.read().decode("utf-8", "replace"))
-        except Exception as error:
-            raise LastfmError(f"{method}: {error}") from error
-        if "error" in payload:
-            raise LastfmError(f"{method}: {payload['error']} {payload.get('message', '')}")
-        return payload
+
+        last_error: Exception | None = None
+        for attempt in range(RETRIES):
+            time.sleep(REQUEST_INTERVAL)
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = json.loads(response.read().decode("utf-8", "replace"))
+            except urllib.error.HTTPError as error:
+                # Last.fm returns 500 under load and 429 when pushed.
+                if error.code in RETRY_STATUS and attempt < RETRIES - 1:
+                    last_error = error
+                    time.sleep(2**attempt)
+                    continue
+                raise LastfmError(f"{method}: HTTP {error.code}") from error
+            except Exception as error:
+                if attempt < RETRIES - 1:
+                    last_error = error
+                    time.sleep(2**attempt)
+                    continue
+                raise LastfmError(f"{method}: {error}") from error
+            if "error" in payload:
+                raise LastfmError(f"{method}: {payload['error']} {payload.get('message', '')}")
+            return payload
+
+        raise LastfmError(f"{method}: gave up after {RETRIES} attempts: {last_error}")
 
     def _top_track_plays(self) -> dict[tuple[str, str], int]:
         """Total plays per track, which the recent history alone undercounts."""
@@ -111,7 +136,7 @@ class LastfmProvider:
         return plays
 
     def _recent_scrobbles(self) -> tuple[list[tuple[datetime, str, str]], list[tuple[str, str]]]:
-        """Scrobbles newest first, with a timestamp, for building sessions."""
+        """Scrobbles with timestamps, oldest first, for building sessions."""
         scrobbles: list[tuple[datetime, str, str]] = []
         skipped: list[tuple[str, str]] = []
         for page in range(1, MAX_PAGES + 1):
@@ -119,6 +144,7 @@ class LastfmProvider:
             batch = payload.get("recenttracks", {}).get("track", [])
             if not batch:
                 break
+            reached_window = False
             for track in batch:
                 artist = track.get("artist", {}).get("#text", "")
                 name = track.get("name", "")
@@ -129,8 +155,13 @@ class LastfmProvider:
                 if not artist or not name:
                     skipped.append((f"{artist} - {name}", "missing artist or title"))
                     continue
-                scrobbles.append((datetime.fromtimestamp(int(stamp), tz=timezone.utc), artist, name))
-            if len(scrobbles) >= self.recent_limit or len(batch) < PAGE_SIZE:
+                moment = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
+                if self.since is not None and moment < self.since:
+                    # Pages run newest first, so the window cannot appear again.
+                    reached_window = True
+                    break
+                scrobbles.append((moment, artist, name))
+            if reached_window or len(scrobbles) >= self.recent_limit or len(batch) < PAGE_SIZE:
                 break
         scrobbles.sort(key=lambda row: row[0])
         return scrobbles, skipped
