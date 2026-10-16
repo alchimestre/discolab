@@ -651,6 +651,13 @@ def _section(
     )
 
 
+# Bump this whenever resolve_artist's rules change. Without it a cached page
+# keeps serving videos the current rules would reject: the substring match
+# that let CANAL+ Sport Afrique rank as the band Can lived on in the cache
+# long after the rule was fixed.
+RESOLVER_VERSION = 2
+
+
 def load_video_cache(path: Path) -> dict[str, list[Video]]:
     if not path.is_file():
         return {}
@@ -658,9 +665,14 @@ def load_video_cache(path: Path) -> dict[str, list[Video]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+    if not isinstance(data, dict) or data.get("version") != RESOLVER_VERSION:
+        return {}
+    entries = data.get("videos")
+    if not isinstance(entries, dict):
+        return {}
     return {
         name: [Video(**item) for item in items]
-        for name, items in data.items()
+        for name, items in entries.items()
         if isinstance(items, list)
     }
 
@@ -668,7 +680,10 @@ def load_video_cache(path: Path) -> dict[str, list[Video]]:
 def save_video_cache(path: Path, videos: dict[str, list[Video]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        name: [asdict(video) for video in items] for name, items in videos.items()
+        "version": RESOLVER_VERSION,
+        "videos": {
+            name: [asdict(video) for video in items] for name, items in videos.items()
+        },
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
 
