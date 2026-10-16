@@ -48,6 +48,29 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
+def write_artist_sources(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Attach Discogs styles and labels, and note that the artist was asked about."""
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (a:Artist {key: row.key})
+            SET a.discogs_styles = row.styles,
+                a.discogs_labels = row.labels,
+                a.discogs_checked = true
+            WITH a, row
+            UNWIND row.labels AS label_name
+            MERGE (l:Label {key: label_name})
+            MERGE (a)-[:ON_LABEL]->(l)
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    return len(rows)
+
+
 def write_artist_identity(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach the canonical identity and its curated tags to an artist."""
     if not rows:

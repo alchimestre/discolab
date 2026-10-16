@@ -93,6 +93,8 @@ class Candidate:
     external: bool = False
     seed_count: int = 0
     areas: int = 0
+    styles: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -565,14 +567,20 @@ def _provenance(candidate: Candidate) -> str:
     """Say where the artist came from, since the two sources mean different things."""
     if candidate.external:
         via = ", ".join(candidate.seeds[:3]) or "unknown seed"
-        return (
+        header = (
             f"not in your library · {candidate.seed_count} seed(s) across "
             f"{candidate.areas} area(s) · via {html.escape(via)}"
         )
-    return (
-        f"island {candidate.component} of {candidate.component_size} artists, "
-        f"degree {candidate.degree}, bridge {candidate.bridge_score:.5f}"
-    )
+    else:
+        header = (
+            f"island {candidate.component} of {candidate.component_size} artists, "
+            f"degree {candidate.degree}, bridge {candidate.bridge_score:.5f}"
+        )
+    if candidate.styles:
+        header += f" · {html.escape(', '.join(candidate.styles[:4]))}"
+    if candidate.labels:
+        header += f" · on {html.escape(', '.join(candidate.labels[:2]))}"
+    return header
 
 
 def _section(

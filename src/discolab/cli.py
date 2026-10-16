@@ -27,6 +27,7 @@ from .config import Settings, load_env_file
 from .enrich import (
     DEFAULT_DB,
     MUSICBRAINZ_INTERVAL,
+    DiscogsEnricher,
     MusicBrainzEnricher,
     RekordboxEnricher,
     join_key,
@@ -492,6 +493,40 @@ def _identify_with_musicbrainz(settings: Settings, limit: int) -> None:
             typer.echo(f"  {names[:78]}")
 
 
+def _enrich_candidates_from_discogs(driver, database: str, keys: list[str]) -> None:
+    """Ask Discogs only about the artists about to be shown.
+
+    Covering the whole graph costs half an hour at one request a second, which
+    is the same rate MusicBrainz offers. The candidates are twenty-five names,
+    so the same enrichment is half a minute when it is asked for here.
+    """
+    missing = query.artists_without_discogs(driver, database, keys)
+    if not missing:
+        return
+    enricher = DiscogsEnricher(os.environ.get("DISCOGS_TOKEN", ""))
+    reason = enricher.unavailable_reason()
+    if reason:
+        typer.echo(reason, err=True)
+        return
+
+    typer.echo(f"asking Discogs about {len(missing)} artists")
+    rows = []
+    for position, artist in enumerate(missing, start=1):
+        facts = enricher.facts(artist["name"])
+        if facts is not None:
+            rows.append(
+                {
+                    "key": artist["key"],
+                    "styles": list(facts.styles),
+                    "labels": list(facts.labels),
+                }
+            )
+        if position % 10 == 0:
+            typer.echo(f"  asked {position}/{len(missing)}", err=True)
+    load.write_artist_sources(driver, database, rows)
+    typer.echo(f"Discogs answered for {len(rows)} of {len(missing)}")
+
+
 def _explain_empty(driver, database: str) -> None:
     summary = query.stats(driver, database)
     typer.echo("no candidates.")
@@ -630,6 +665,11 @@ def check(
         help="Only count agreement from seeds tagged with one of these, comma separated. "
         "Applies to the ranking, not just to which seeds were expanded from.",
     ),
+    discogs: bool = typer.Option(
+        True,
+        "--discogs/--no-discogs",
+        help="Ask Discogs about the candidates for styles and labels. One request each.",
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -664,6 +704,9 @@ def check(
             else {}
         )
         titles = query.library_titles(driver, database)
+        if discogs:
+            _enrich_candidates_from_discogs(driver, database, keys)
+        sources = query.artist_sources(driver, database, keys)
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
@@ -696,6 +739,8 @@ def check(
             external=source == "external",
             seed_count=row.get("seed_count", 0),
             areas=row.get("areas", 0),
+            styles=tuple(sources.get(row["key"], {}).get("styles", ())),
+            labels=tuple(sources.get(row["key"], {}).get("labels", ())),
         )
         for row in rows
     ]

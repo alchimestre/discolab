@@ -104,6 +104,88 @@ class MusicBrainzEnricher:
         )
 
 
+DISCOGS_ROOT = "https://api.discogs.com"
+DISCOGS_AGENT = "discolab/0.1 +local"
+# Authenticated Discogs allows 60 requests a minute, which is one a second.
+DISCOGS_INTERVAL = 1.05
+DISCOGS_PER_PAGE = 25
+
+
+class DiscogsError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseFacts:
+    styles: tuple[str, ...]
+    genres: tuple[str, ...]
+    labels: tuple[str, ...]
+    countries: tuple[str, ...]
+
+
+class DiscogsEnricher:
+    """Styles and labels, asked for one artist at a time and only when needed.
+
+    A search restricted to the artist returns each release with its styles,
+    genres and labels in a single request, so an artist costs one call rather
+    than one per release.
+    """
+
+    def __init__(self, token: str, agent: str = DISCOGS_AGENT):
+        self.token = token
+        self.agent = agent
+
+    def unavailable_reason(self) -> str | None:
+        return None if self.token else "set DISCOGS_TOKEN in .env"
+
+    def facts(self, artist: str) -> ReleaseFacts | None:
+        query = urllib.parse.urlencode(
+            {
+                "artist": artist,
+                "type": "release",
+                "per_page": DISCOGS_PER_PAGE,
+            }
+        )
+        request = urllib.request.Request(
+            f"{DISCOGS_ROOT}/database/search?{query}",
+            headers={
+                "User-Agent": self.agent,
+                "Authorization": f"Discogs token={self.token}",
+            },
+        )
+        time.sleep(DISCOGS_INTERVAL)
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as error:
+            if error.code == 429:
+                time.sleep(5)
+            return None
+        except Exception:
+            return None
+
+        results = payload.get("results") or []
+        if not results:
+            return None
+
+        def collect(field: str) -> tuple[str, ...]:
+            seen: set[str] = set()
+            for item in results:
+                value = item.get(field)
+                if isinstance(value, list):
+                    seen.update(str(entry).strip() for entry in value if entry)
+                elif value:
+                    seen.add(str(value).strip())
+            return tuple(sorted(seen))
+
+        return ReleaseFacts(
+            styles=collect("style"),
+            genres=collect("genre"),
+            labels=collect("label"),
+            countries=collect("country"),
+        )
+
+
 def join_key(path: str) -> str:
     """Normalise a path so macOS and rekordbox spellings agree.
 

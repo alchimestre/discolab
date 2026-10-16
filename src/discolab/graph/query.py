@@ -147,6 +147,41 @@ def seed_artists(
     return seeds
 
 
+def artist_sources(
+    driver: Driver, database: str, keys: Sequence[str]
+) -> dict[str, dict]:
+    """Styles and labels per artist key, for whatever has been fetched so far."""
+    records = driver.execute_query(
+        """
+        UNWIND $keys AS key
+        MATCH (a:Artist {key: key})
+        RETURN a.key AS key,
+               coalesce(a.discogs_styles, []) AS styles,
+               coalesce(a.discogs_labels, []) AS labels
+        """,
+        keys=list(keys),
+        database_=database,
+    ).records
+    return {record["key"]: dict(record) for record in records}
+
+
+def artists_without_discogs(
+    driver: Driver, database: str, keys: Sequence[str]
+) -> list[dict]:
+    """Of the given artists, the ones Discogs has not been asked about."""
+    records = driver.execute_query(
+        """
+        UNWIND $keys AS key
+        MATCH (a:Artist {key: key})
+        WHERE coalesce(a.discogs_checked, false) = false
+        RETURN a.key AS key, a.name AS name
+        """,
+        keys=list(keys),
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def artists_to_identify(driver: Driver, database: str, limit: int) -> list[dict]:
     """Corpus artists MusicBrainz has not been asked about yet, busiest first."""
     records = driver.execute_query(
