@@ -11,9 +11,12 @@ from collections.abc import Iterable
 
 from .model import Artist, Catalog, Container, Credit, RawTrack, Track
 
-# Artist fields that name nobody.
+# Artist fields that name nobody. Scrobble histories add their own placeholders.
 JUNK_ARTISTS = frozenset(
-    {"", "various artists", "various", "va", "v a", "unknown", "unknown artist"}
+    {
+        "", "various artists", "various", "va", "v a", "unknown", "unknown artist",
+        "anonymous", "[anonymous]", "[unknown]", "unknown artist", "no artist",
+    }
 )
 
 # Mix labels that are a version rather than a person.

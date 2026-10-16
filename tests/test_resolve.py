@@ -60,6 +60,12 @@ def test_split_artists_drops_placeholder_and_keeps_the_real_name():
     assert split_artists("") == []
 
 
+def test_split_artists_drops_scrobble_placeholders():
+    assert split_artists("Anonymous") == []
+    assert split_artists("[unknown]") == []
+    assert split_artists("Unknown Artist") == []
+
+
 def test_parse_credits_reads_remixers():
     assert parse_credits("Pulo NDJ", "Dabadji Am Alcorama (El Búho remix)") == [
         ("El Búho", "remix")

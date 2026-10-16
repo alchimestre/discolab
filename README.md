@@ -28,6 +28,7 @@ Neo4j Browser is at `http://localhost:7474`.
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
 | `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
 | `discolab check [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
+| `discolab votes [--path PATH]` | Summarise the ticks and read the criterion |
 | `discolab stats [--islands N]` | Node, edge and island counts |
 | `discolab reset --yes` | Delete every node and relationship |
 | `discolab run --root PATH` | Ingest, derive, then candidates |
@@ -60,7 +61,17 @@ The page listens for the YouTube player's error event and loads the next candida
 
 An artist with no official upload gets no embed rather than a re-upload. `Humanoids` on the sample library is one.
 
-The kill criterion is on that page. Fewer than 3 of 25 kept means the query is wrong, the data is too thin, or blank space between clusters is not fertile. Write the outcome down before changing anything.
+The kill criterion is on that page, and the ticks are written to `out/votes.json` as they are made, so closing the tab loses nothing and the boxes come back ticked on the next build. `discolab votes` prints the reading:
+
+```
+$ uv run discolab votes
+kept 6 of 25 candidates
+  new tracks: 3
+  already known: 3
+criterion not met: fewer than 3 new tracks kept
+```
+
+Only ticks on tracks you do not already hold count towards the criterion, so `discolab votes` separates them.
 
 The page is written to `out/`, which is not committed, and it lists local file paths.
 
