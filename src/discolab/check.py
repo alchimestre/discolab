@@ -15,7 +15,7 @@ import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .resolve import normalise
@@ -25,7 +25,7 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
 SEARCH_TIMEOUT = 20.0
-MAX_VIDEOS_PER_ARTIST = 4
+MAX_VIDEOS_PER_ARTIST = 10
 
 # A set, mix or full album upload is not what a name search should return first.
 SET_PATTERNS = re.compile(
@@ -101,27 +101,48 @@ def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
     return _videos(body)
 
 
-def resolve_artist(name: str, limit: int = MAX_VIDEOS_PER_ARTIST) -> list[Video]:
-    """Ranked official tracks for an artist, best first.
+def resolve_artist(
+    name: str,
+    owned_titles: Sequence[str] = (),
+    limit: int = MAX_VIDEOS_PER_ARTIST,
+) -> list[Video]:
+    """Official tracks for an artist, best first.
 
-    Only official uploads are returned. Several are returned because uploaders
-    can still block embedding, and a blocked upload only reveals itself as a
-    dead player. An artist with no official upload yields nothing, which is
-    better than embedding a fan re-upload.
+    Searches the artist name, then the titles of tracks already in the library,
+    because a name alone returns a thin and repetitive pool and the owned
+    titles find the exact uploads.
+
+    Ordered by how much the upload can be trusted, then by whether it is a
+    track the library already holds, so that when an uploader blocks embedding
+    the page moves to the next best one.
+
+    An artist with no official upload yields nothing, which is better than
+    embedding a fan re-upload.
     """
-    found: list[Video] = []
-    seen: set[str] = set()
-    for query in (f"{name} - Topic", name):
+    queries = [f"{name} - Topic", name]
+    queries.extend(f"{name} {title}" for title in owned_titles[:3])
+    owned_keys = [key for key in (normalise(title) for title in owned_titles) if key]
+
+    found: dict[str, tuple[int, int, int, Video]] = {}
+    order = 0
+    for query in queries:
         for video in search_videos(query):
-            if video.video_id in seen:
+            if video.video_id in found:
                 continue
-            seen.add(video.video_id)
-            if not is_track(video) or not is_official(video, name):
+            order += 1
+            rank = official_rank(video, name)
+            if rank is None or not is_track(video):
                 continue
-            found.append(video)
-        if found:
-            break
-    return found[:limit]
+            title_key = normalise(video.title)
+            holds = 0 if any(key in title_key for key in owned_keys) else 1
+            found[video.video_id] = (rank, holds, order, video)
+
+    ranked = sorted(found.values(), key=lambda item: (item[0], item[1], item[2]))
+    # An artist with their own channel or distributor channel does not need
+    # uploads that only look official, which is where loose matches creep in.
+    if ranked and ranked[0][0] <= 1:
+        ranked = [item for item in ranked if item[0] <= 1]
+    return [video for _, _, _, video in ranked[:limit]]
 
 
 def is_track(video: Video) -> bool:
@@ -133,26 +154,30 @@ def is_track(video: Video) -> bool:
     return True
 
 
-def is_official(video: Video, artist: str) -> bool:
-    """True for the artist's own channel, their distributor, or a verified channel.
+def official_rank(video: Video, artist: str) -> int | None:
+    """How official an upload is, lower being better, or None to reject it.
 
     Fan re-uploads and aggregator channels are the common case in a name
-    search, so an unverified channel must be the artist's own. A verified
-    channel is not enough on its own either: verified businesses re-upload
-    anything, so the title has to open with the artist's name, as a label
-    upload does.
+    search, so an unverified channel has to be the artist's own. A verified
+    channel is not enough either: verified businesses re-upload anything, so a
+    title that merely opens with the artist's name is ranked last. That is how
+    a Mexican song also called El Buho outranked the artist himself.
     """
     key = normalise(artist)
     if not key:
-        return False
+        return None
     channel = normalise(video.channel)
     title = normalise(video.title)
     if channel.endswith("topic"):
-        channel = channel[: -len("topic")].strip()
-        return key in channel or title.startswith(key)
+        stem = channel[: -len("topic")].strip()
+        if key in stem:
+            return 1
+        return 2 if title.startswith(key) else None
     if key in channel:
-        return True
-    return video.verified and title.startswith(key)
+        return 0
+    if video.verified and title.startswith(key):
+        return 3
+    return None
 
 
 def _videos(body: str) -> list[Video]:
@@ -273,7 +298,7 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
   Criterion: fewer than 3 kept means the query is wrong, the data is too thin, or blank space is not fertile.
 </div>
 <h1>{html.escape(title)}</h1>
-<p>One embed per artist, plus alternative official uploads and links to the other catalogues. Tick the ones worth playing again. Only tracks from the artist's own, distributor or verified channel are embedded, and a player that reports the uploader blocked embedding is swapped for a link.</p>
+<p>One embed per artist, plus alternative official uploads and links to the other catalogues. Tick the ones worth playing again. Only tracks from the artist's own, distributor or verified channel are embedded. If an uploader blocked embedding the page moves to the next official upload, and only falls back to a link when none of them play.</p>
 {sections}
 <script>
   const boxes = [...document.querySelectorAll('input.keep')];
@@ -294,19 +319,48 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
     const player = section.querySelector('.player');
     const fallback = section.querySelector('.fallback');
     if (player) player.hidden = true;
+    const note = fallback && fallback.querySelector('.fallback-note');
+    if (note) {{
+      const tried = section.dataset.attempts || '0';
+      const pool = JSON.parse(section.dataset.videos || '[]').length;
+      note.textContent = 'All ' + tried + ' of ' + pool
+        + ' official uploads block embedding. Play it on YouTube instead.';
+    }}
     if (fallback) fallback.hidden = false;
     section.dataset.dead = '1';
     dead += 1;
     update();
   }}
 
-  // The player API reports error 101 or 150 when the uploader disabled embedding,
-  // which is otherwise invisible until a listener hits a blank frame.
+  function setLabel(section, text) {{
+    const line = section.querySelector('.video-title');
+    if (line && text) line.textContent = text;
+  }}
+
+  // The player API reports error 101 or 150 when an uploader disabled embedding.
+  // Most artists have several official uploads, so move to the next one rather
+  // than sending the listener elsewhere; only give up when none of them play.
   window.onYouTubeIframeAPIReady = function () {{
     document.querySelectorAll('iframe.yt').forEach(function (frame) {{
       const section = frame.closest('section');
-      new YT.Player(frame, {{
-        events: {{ onError: function () {{ markDead(section); }} }}
+      const videos = JSON.parse(section.dataset.videos || '[]');
+      let index = 0;
+      let attempts = 0;
+      let player;
+      player = new YT.Player(frame, {{
+        events: {{
+          onError: function () {{
+            attempts += 1;
+            section.dataset.attempts = attempts;
+            index += 1;
+            if (index < videos.length) {{
+              player.loadVideoById(videos[index].id);
+              setLabel(section, videos[index].label);
+            }} else {{
+              markDead(section);
+            }}
+          }}
+        }}
       }});
     }});
   }};
@@ -321,8 +375,10 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
 
 def _section(index: int, candidate: Candidate) -> str:
     query = urllib.parse.quote(candidate.name)
+    playlist = [{"id": v.video_id, "label": v.label} for v in candidate.videos]
+    data_videos = html.escape(json.dumps(playlist, ensure_ascii=False), quote=True)
     parts = [
-        "<section>",
+        f'<section data-videos="{data_videos}">',
         f"<h2>{index}. {html.escape(candidate.name)} "
         f"<small>island {candidate.component} of {candidate.component_size} artists, "
         f"degree {candidate.degree}, bridge {candidate.bridge_score:.5f}</small></h2>",
@@ -346,7 +402,7 @@ def _section(index: int, candidate: Candidate) -> str:
             '<div class="fallback" hidden>'
             f'<a href="{primary.watch_url}">'
             f'<img src="{primary.thumbnail_url}" alt="" loading="lazy"></a>'
-            "<p>This uploader blocked embedding. Play it on YouTube instead.</p>"
+            "<p class=\"fallback-note\">This uploader blocks embedding.</p>"
             "</div>"
         )
         parts.append(f'<p class="video-title">{html.escape(primary.label)}</p>')
@@ -373,6 +429,28 @@ def _section(index: int, candidate: Candidate) -> str:
     parts.append('<label class="keep"><input type="checkbox" class="keep"> keep</label>')
     parts.append("</section>")
     return "\n".join(parts)
+
+
+def load_video_cache(path: Path) -> dict[str, list[Video]]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return {
+        name: [Video(**item) for item in items]
+        for name, items in data.items()
+        if isinstance(items, list)
+    }
+
+
+def save_video_cache(path: Path, videos: dict[str, list[Video]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        name: [asdict(video) for video in items] for name, items in videos.items()
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def write_page(content: str, path: Path) -> Path:

@@ -11,7 +11,9 @@ from .check import (
     Candidate,
     Video,
     build_page,
+    load_video_cache,
     resolve_artist,
+    save_video_cache,
     serve_directory,
     write_page,
 )
@@ -182,6 +184,12 @@ def check(
         "--youtube/--no-youtube",
         help="Resolve one YouTube embed per artist. The only step that uses the network.",
     ),
+    cache: Path = typer.Option(
+        Path("out/videos.json"), "--cache", help="Resolved videos, reused to avoid re-searching."
+    ),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Ignore the cache and search again."
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -203,13 +211,18 @@ def check(
             driver, database, [row["key"] for row in rows], tracks
         )
 
-    videos: dict[str, list[Video]] = {}
+    videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
-        for position, row in enumerate(rows, start=1):
-            videos[row["name"]] = resolve_artist(row["name"])
-            typer.echo(f"  resolved {position}/{len(rows)}", err=True)
+        pending = [row for row in rows if row["name"] not in videos]
+        if videos:
+            typer.echo(f"reusing {len(videos)} cached resolutions")
+        for position, row in enumerate(pending, start=1):
+            titles = [track["title"] for track in owned.get(row["key"], [])]
+            videos[row["name"]] = resolve_artist(row["name"], titles)
+            typer.echo(f"  resolved {position}/{len(pending)}", err=True)
             time.sleep(0.4)
-        with_track = sum(1 for found in videos.values() if found)
+        save_video_cache(cache, videos)
+        with_track = sum(1 for row in rows if videos.get(row["name"]))
         typer.echo(f"artists with a track resolved: {with_track}/{len(rows)}")
 
     candidates = [

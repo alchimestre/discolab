@@ -26,7 +26,7 @@ Neo4j Browser is at `http://localhost:7474`.
 | `discolab ingest --root PATH [--root PATH] [--recreate]` | Scan files, resolve entities, load observed nodes and edges |
 | `discolab derive [--resolution F] [--min-artists N] [--max-artists N]` | Build artist edges, communities, islands, bridge scores |
 | `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
-| `discolab check [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube]` | Write a local listening page |
+| `discolab check [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
 | `discolab stats [--islands N]` | Node, edge and island counts |
 | `discolab reset --yes` | Delete every node and relationship |
 | `discolab run --root PATH` | Ingest, derive, then candidates |
@@ -42,16 +42,16 @@ uv run discolab stats --islands 15
 
 `discolab check` writes one HTML page, one section per artist, with links to Spotify, YouTube, Bandcamp, Discogs and MusicBrainz. Tick the ones worth playing again and the header counts them.
 
-Each section embeds one official track, chosen by these rules:
+Each section embeds one official track. Candidates are found by searching the artist name, then the titles of tracks the library already holds, which is what turns a thin and repetitive pool into the actual uploads.
 
 | Rule | Reason |
 |---|---|
 | Single tracks only | Sets, mixes and full albums are rejected on title, or on a length above 15 minutes |
 | The artist's own channel, or their distributor's Topic channel | A name search returns fan re-uploads first |
-| A verified channel only when the title opens with the artist's name | Verified businesses re-upload anything |
-| Several uploads listed per artist | Uploaders can block embedding |
+| A verified channel only when the title opens with the artist's name, and only when the artist has no channel of their own | Verified businesses re-upload anything |
+| Many uploads per artist, ranked by channel trust then by whether the library holds the track | Uploaders can block embedding, so the page needs somewhere to go next |
 
-The page listens for the YouTube player's error event, so an upload that blocks embedding is replaced by a thumbnail and a link instead of a dead frame. The header reports how many were blocked.
+The page listens for the YouTube player's error event and loads the next candidate, so an upload that blocks embedding is replaced rather than becoming a dead frame. Only when every candidate is blocked does it fall back to a thumbnail and a link. The header reports how many fell through.
 
 An artist with no official upload gets no embed rather than a re-upload. `Humanoids` on the sample library is one.
 
