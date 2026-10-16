@@ -24,7 +24,13 @@ from .check import (
     write_page,
 )
 from .config import Settings, load_env_file
-from .enrich import DEFAULT_DB, RekordboxEnricher, join_key
+from .enrich import (
+    DEFAULT_DB,
+    MUSICBRAINZ_INTERVAL,
+    MusicBrainzEnricher,
+    RekordboxEnricher,
+    join_key,
+)
 from .expand import LastfmSimilarExpander
 from .graph import derive, load, query, store
 from .model import RawTrack
@@ -378,9 +384,29 @@ def enrich(
     rekordbox: Path = typer.Option(
         DEFAULT_DB, "--rekordbox", help="Path to the rekordbox master.db."
     ),
+    skip_rekordbox: bool = typer.Option(
+        False, "--skip-rekordbox", help="Leave the rekordbox step alone."
+    ),
+    musicbrainz: bool = typer.Option(
+        False,
+        "--musicbrainz",
+        help="Identify artists against MusicBrainz. One request a second, and it resumes.",
+    ),
+    limit: int = typer.Option(
+        200, "--limit", help="Artists to identify in this run; the next run continues."
+    ),
 ) -> None:
-    """Attach curated BPM, key and My Tags from rekordbox to tracks and artists."""
+    """Enrich tracks and artists from curated sources."""
     settings = _settings([])
+
+    if not skip_rekordbox:
+        _enrich_from_rekordbox(settings, rekordbox)
+
+    if musicbrainz:
+        _identify_with_musicbrainz(settings, limit)
+
+
+def _enrich_from_rekordbox(settings: Settings, rekordbox: Path) -> None:
     enricher = RekordboxEnricher(rekordbox)
     reason = enricher.unavailable_reason()
     if reason:
@@ -399,13 +425,11 @@ def enrich(
         pairs = query.track_paths(driver, database)
         rows: list[dict] = []
         seen: set[str] = set()
-        matched = 0
         for pair in pairs:
             sheet = facts.get(join_key(pair["path"]))
             if sheet is None or pair["key"] in seen:
                 continue
             seen.add(pair["key"])
-            matched += 1
             rows.append(
                 {
                     "key": pair["key"],
@@ -416,9 +440,56 @@ def enrich(
                     "tags": list(sheet.tags),
                 }
             )
-        written = load.write_track_facts(driver, database, rows)
+        load.write_track_facts(driver, database, rows)
+    typer.echo(f"enriched {len(rows)} tracks from {len(pairs)} paths")
 
-    typer.echo(f"matched {matched} of {len(pairs)} paths, enriched {written} tracks")
+
+def _identify_with_musicbrainz(settings: Settings, limit: int) -> None:
+    enricher = MusicBrainzEnricher()
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        pending = query.artists_to_identify(driver, database, limit)
+    if not pending:
+        typer.echo("every artist with tracks has been identified already")
+    else:
+        typer.echo(f"identifying {len(pending)} artists, one request a second")
+        rows = []
+        found = 0
+        for position, artist in enumerate(pending, start=1):
+            facts = enricher.lookup(artist["name"])
+            time.sleep(MUSICBRAINZ_INTERVAL)
+            if facts is None:
+                rows.append(
+                    {"key": artist["key"], "mbid": None, "mb_type": None,
+                     "mb_country": None, "tags": []}
+                )
+                continue
+            found += 1
+            rows.append(
+                {
+                    "key": artist["key"],
+                    "mbid": facts.mbid,
+                    "mb_type": facts.kind,
+                    "mb_country": facts.country,
+                    "tags": list(facts.tags),
+                }
+            )
+            if position % 25 == 0:
+                typer.echo(f"  identified {position}/{len(pending)}", err=True)
+        with store.connect(settings) as driver:
+            load.write_artist_identity(driver, settings.neo4j_database, rows)
+            duplicates = query.duplicate_identities(driver, settings.neo4j_database)
+        typer.echo(f"identified {found} of {len(pending)} artists")
+
+    if duplicates:
+        total = sum(len(entry["nodes"]) for entry in duplicates)
+        typer.echo(
+            f"{len(duplicates)} identities span {total} artist nodes, which is "
+            f"{total - len(duplicates)} duplicates to merge"
+        )
+        for entry in duplicates[:8]:
+            names = ", ".join(node["name"] for node in entry["nodes"])
+            typer.echo(f"  {names[:78]}")
 
 
 def _explain_empty(driver, database: str) -> None:

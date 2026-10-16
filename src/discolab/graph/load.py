@@ -48,6 +48,29 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
+def write_artist_identity(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Attach the canonical identity and its curated tags to an artist."""
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (a:Artist {key: row.key})
+            SET a.mbid = row.mbid, a.mb_type = row.mb_type,
+                a.mb_country = row.mb_country, a.mb_tags = row.tags,
+                a.mb_checked = true
+            WITH a, row
+            UNWIND row.tags AS tag_name
+            MERGE (g:Tag {key: tag_name})
+            MERGE (a)-[:TAGGED]->(g)
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    return len(rows)
+
+
 def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach curated facts and their tags to tracks, then roll tags up to artists."""
     if not rows:

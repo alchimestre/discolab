@@ -147,6 +147,40 @@ def seed_artists(
     return seeds
 
 
+def artists_to_identify(driver: Driver, database: str, limit: int) -> list[dict]:
+    """Corpus artists MusicBrainz has not been asked about yet, busiest first."""
+    records = driver.execute_query(
+        """
+        MATCH (a:Artist)
+        WHERE coalesce(a.external, false) = false AND coalesce(a.mb_checked, false) = false
+        OPTIONAL MATCH (t:Track)-[:BY]->(a)
+        WITH a, count(t) AS tracks
+        WHERE tracks > 0
+        RETURN a.key AS key, a.name AS name, tracks
+        ORDER BY tracks DESC, a.name
+        LIMIT $limit
+        """,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
+def duplicate_identities(driver: Driver, database: str) -> list[dict]:
+    """Artist keys that MusicBrainz says are the same artist."""
+    records = driver.execute_query(
+        """
+        MATCH (a:Artist) WHERE a.mbid IS NOT NULL
+        WITH a.mbid AS mbid, collect({key: a.key, name: a.name}) AS nodes
+        WHERE size(nodes) > 1
+        RETURN mbid, nodes
+        ORDER BY size(nodes) DESC
+        """,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def track_paths(driver: Driver, database: str) -> list[dict]:
     records = driver.execute_query(
         "MATCH (t:Track) UNWIND t.paths AS p RETURN t.key AS key, p AS path",

@@ -12,9 +12,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import shutil
 import subprocess
+import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -39,6 +44,64 @@ class TrackFacts:
     rating: int
     dj_plays: int
     tags: tuple[str, ...] = field(default=())
+
+
+MUSICBRAINZ_ROOT = "https://musicbrainz.org/ws/2/artist/"
+# MusicBrainz asks for a real user agent and allows one request a second.
+MUSICBRAINZ_AGENT = "discolab/0.1 ( local taste graph )"
+MUSICBRAINZ_INTERVAL = 1.1
+
+
+@dataclass(frozen=True, slots=True)
+class ArtistFacts:
+    mbid: str
+    name: str
+    kind: str | None
+    country: str | None
+    tags: tuple[str, ...]
+    score: int
+
+
+class MusicBrainzEnricher:
+    """Canonical artist identity, which is what collapses duplicate nodes."""
+
+    def __init__(self, agent: str = MUSICBRAINZ_AGENT):
+        self.agent = agent
+
+    def lookup(self, name: str, minimum_score: int = 90) -> ArtistFacts | None:
+        query = urllib.parse.urlencode(
+            {"query": f'artist:"{name}"', "fmt": "json", "limit": 1}
+        )
+        request = urllib.request.Request(
+            MUSICBRAINZ_ROOT + "?" + query,
+            headers={"User-Agent": self.agent, "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as error:
+            if error.code in (429, 503):
+                # Being asked to slow down is not a failure of the lookup.
+                time.sleep(3)
+            return None
+        except Exception:
+            return None
+
+        artists = payload.get("artists") or []
+        if not artists:
+            return None
+        best = artists[0]
+        score = int(best.get("score") or 0)
+        if score < minimum_score or not best.get("id"):
+            return None
+        return ArtistFacts(
+            mbid=best["id"],
+            name=best.get("name") or name,
+            kind=best.get("type"),
+            country=best.get("country"),
+            tags=tuple(sorted({t["name"] for t in (best.get("tags") or []) if t.get("name")})),
+            score=score,
+        )
 
 
 def join_key(path: str) -> str:
