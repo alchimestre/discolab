@@ -393,6 +393,17 @@ def enrich(
         "--musicbrainz",
         help="Identify artists against MusicBrainz. One request a second, and it resumes.",
     ),
+    discogs: bool = typer.Option(
+        False,
+        "--discogs",
+        help="Fetch styles and labels for artists. One request each, and it resumes.",
+    ),
+    external_only: bool = typer.Option(
+        False, "--external-only", help="Limit the Discogs pass to artists from expansion."
+    ),
+    keep_going: bool = typer.Option(
+        False, "--keep-going", help="Repeat until every artist has been asked about."
+    ),
     limit: int = typer.Option(
         200, "--limit", help="Artists to identify in this run; the next run continues."
     ),
@@ -405,6 +416,64 @@ def enrich(
 
     if musicbrainz:
         _identify_with_musicbrainz(settings, limit)
+
+    if discogs:
+        _enrich_artists_from_discogs(settings, limit, external_only, keep_going)
+
+
+def _enrich_artists_from_discogs(
+    settings: Settings, limit: int, external_only: bool, keep_going: bool = False
+) -> None:
+    """Walk the artists Discogs has not been asked about, writing as it goes.
+
+    Nothing waits on this. It runs beside the page build, so a slow API costs
+    throughput rather than blocking anything.
+    """
+    enricher = DiscogsEnricher(os.environ.get("DISCOGS_TOKEN", ""))
+    reason = enricher.unavailable_reason()
+    if reason:
+        typer.echo(reason, err=True)
+        raise typer.Exit(code=2)
+
+    asked = 0
+    answered = 0
+    while True:
+        with store.connect(settings) as driver:
+            pending = query.artists_needing_discogs(
+                driver, settings.neo4j_database, limit, external_only
+            )
+        if not pending:
+            break
+
+        typer.echo(f"asking Discogs about {len(pending)} artists")
+        rows: list[dict] = []
+        for position, artist in enumerate(pending, start=1):
+            facts = enricher.facts(artist["name"])
+            if facts is None:
+                # Record the miss so the next pass does not ask again.
+                rows.append({"key": artist["key"], "styles": [], "labels": []})
+            else:
+                answered += 1
+                rows.append(
+                    {
+                        "key": artist["key"],
+                        "styles": list(facts.styles),
+                        "labels": list(facts.labels),
+                    }
+                )
+            asked += 1
+            if position % 50 == 0:
+                typer.echo(f"  asked {position}/{len(pending)}", err=True)
+                with store.connect(settings) as driver:
+                    load.write_artist_sources(driver, settings.neo4j_database, rows)
+                rows = []
+        if rows:
+            with store.connect(settings) as driver:
+                load.write_artist_sources(driver, settings.neo4j_database, rows)
+        if not keep_going:
+            break
+
+    typer.echo(f"Discogs asked about {asked}, answered for {answered}")
 
 
 def _enrich_from_rekordbox(settings: Settings, rekordbox: Path) -> None:
@@ -491,6 +560,27 @@ def _identify_with_musicbrainz(settings: Settings, limit: int) -> None:
         for entry in duplicates[:8]:
             names = ", ".join(node["name"] for node in entry["nodes"])
             typer.echo(f"  {names[:78]}")
+
+
+# What "electronic" means when it is asked for by name, across Last.fm tags,
+# Discogs styles and the rekordbox My Tags in use.
+ELECTRONIC_TAGS = (
+    "electronic,electronica,techno,house,psytrance,downtempo,idm,trance,ambient,"
+    "minimal,electro,breakbeat,drum n bass,dub techno,acid,ebm,industrial,gabber,"
+    "hardcore,rave,progressive trance,tech house,deep house,minimal techno,"
+    "raw / deep / hypnotic,peak time / driving,nocturnal / afterhours,hard techno,"
+    "minimal / deep tech,melodic house & techno,progressive psy-trance,detroit / deep"
+)
+
+
+def _genre_terms(genre: str) -> tuple[str, ...]:
+    """Turn the genre string into terms, expanding the shorthand names."""
+    text = genre.strip()
+    if not text:
+        return ()
+    if text.casefold() == "electronic":
+        text = ELECTRONIC_TAGS
+    return tuple(tag.strip().casefold() for tag in text.split(",") if tag.strip())
 
 
 def _enrich_candidates_from_discogs(driver, database: str, keys: list[str]) -> None:
@@ -684,9 +774,10 @@ def check(
     with store.connect(settings) as driver:
         database = settings.neo4j_database
         if source == "external":
-            wanted = tuple(
-                tag.strip().casefold() for tag in genre.split(",") if tag.strip()
-            )
+            wanted = _genre_terms(genre)
+            # Nothing here waits on a network call. Genre filtering reads what
+            # the background enrichment has already written, and the enrichment
+            # below only fills in the handful of artists actually shown.
             rows = query.external_candidates(
                 driver, database, limit, min_areas, wanted
             )
@@ -721,6 +812,9 @@ def check(
         save_video_cache(cache, videos)
         with_track = sum(1 for row in rows if videos.get(row["name"]))
         typer.echo(f"artists with a track resolved: {with_track}/{len(rows)}")
+
+    if source == "external" and wanted:
+        typer.echo(f"genre filter: {', '.join(wanted[:4])}...")
 
     candidates = [
         Candidate(

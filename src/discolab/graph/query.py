@@ -165,6 +165,31 @@ def artist_sources(
     return {record["key"]: dict(record) for record in records}
 
 
+def artists_needing_discogs(
+    driver: Driver, database: str, limit: int, external_only: bool = False
+) -> list[dict]:
+    """Artists Discogs has not been asked about, the ones that can surface first.
+
+    Enriching all 2,770 expansion artists costs forty-eight minutes at one
+    request a second. Only a few hundred carry enough agreement to reach a
+    page, so they are asked about in that order and the rest wait behind them.
+    """
+    clause = "AND coalesce(a.external, false) = true" if external_only else ""
+    records = driver.execute_query(
+        f"""
+        MATCH (a:Artist)
+        WHERE coalesce(a.discogs_checked, false) = false {clause}
+        WITH a, size([(seed:Artist)-[:SIMILAR_TO]->(a) | seed]) AS agreement
+        ORDER BY agreement DESC, a.name
+        LIMIT $limit
+        RETURN a.key AS key, a.name AS name, agreement
+        """,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def artists_without_discogs(
     driver: Driver, database: str, keys: Sequence[str]
 ) -> list[dict]:
@@ -244,16 +269,30 @@ def external_candidates(
     similarity list. Several seeds agreeing says more, and seeds sitting in
     different communities of the graph agreeing says most.
 
-    When tags are given, only seeds carrying one of them count towards the
-    agreement. Filtering the seeds at expansion time is not enough: the graph
-    keeps every earlier run, so a non-electronic seed expanded months ago would
-    still outvote the ones being asked for.
+    When tags are given, the seeds counted are those carrying one of them and
+    the candidates kept are those carrying one of them too. A candidate whose
+    genre is simply unknown is kept: an artist nothing has been asked about is
+    not a candidate that failed the filter, and dropping it would hide most of
+    the graph until every enrichment pass has finished.
     """
     records = driver.execute_query(
         """
         MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
         WHERE coalesce(e.external, false) = true
-          AND ($tags = [] OR any(t IN coalesce(s.tags, []) WHERE t IN $tags))
+          AND ($tags = [] OR $tags IS NULL
+               OR any(t IN coalesce(s.tags, []) WHERE t IN $tags)
+               OR EXISTS {
+                    MATCH (s)-[:TAGGED]->(sg:Tag) WHERE toLower(sg.key) IN $tags
+                  })
+          AND ($tags = []
+               OR (size(coalesce(e.discogs_styles, [])) = 0
+                   AND size(coalesce(e.tags, [])) = 0
+                   AND NOT EXISTS { MATCH (e)-[:TAGGED]->(:Tag) })
+               OR any(t IN coalesce(e.discogs_styles, []) WHERE toLower(t) IN $tags)
+               OR any(t IN coalesce(e.tags, []) WHERE t IN $tags)
+               OR EXISTS {
+                    MATCH (e)-[:TAGGED]->(eg:Tag) WHERE toLower(eg.key) IN $tags
+                  })
         WITH e,
              count(DISTINCT s) AS seed_count,
              count(DISTINCT s.community) AS areas,
