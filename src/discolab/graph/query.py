@@ -71,6 +71,14 @@ def islands(driver: Driver, database: str, limit: int = 8, sample: int = 6) -> l
     return [dict(record) for record in records]
 
 
+def library_titles(driver: Driver, database: str) -> list[str]:
+    records = driver.execute_query(
+        "MATCH (t:Track) RETURN DISTINCT t.title AS title",
+        database_=database,
+    ).records
+    return [record["title"] for record in records]
+
+
 def stats(driver: Driver, database: str) -> dict:
     record = driver.execute_query(
         """

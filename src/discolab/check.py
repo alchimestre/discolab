@@ -264,34 +264,72 @@ def _renderer_title(renderer: dict) -> str:
     return title.get("simpleText", "")
 
 
-def holds_track(candidate: Candidate, video: Video) -> bool:
-    """True when the library already holds the track this video plays."""
+# A short title matches too much of the library by accident, so only a
+# reasonably long one counts as proof of ownership by a different artist.
+MIN_LIBRARY_TITLE_MATCH = 12
+
+
+def library_keys(library_titles: Sequence[str]) -> list[str]:
+    """Normalised library titles long enough to be proof rather than coincidence."""
+    return [
+        key
+        for key in (normalise(title) for title in library_titles)
+        if len(key) >= MIN_LIBRARY_TITLE_MATCH
+    ]
+
+
+def holds_track(
+    video: Video,
+    artist_titles: Sequence[str],
+    keys: Sequence[str],
+) -> bool:
+    """True when the library already holds the track this video plays.
+
+    Checks the artist's own titles first, then the whole library, because a
+    track can be held under a collaboration, a cover or a different spelling
+    of the same artist.
+    """
     title_key = normalise(video.title)
-    return any(
-        key and key in title_key for key in (normalise(t) for t in candidate.owned_titles)
-    )
+    if not title_key:
+        return False
+    if any(key and key in title_key for key in (normalise(t) for t in artist_titles)):
+        return True
+    return any(key in title_key for key in keys)
 
 
-def ordered_videos(candidate: Candidate) -> list[Video]:
+def ordered_videos(candidate: Candidate, keys: Sequence[str] = ()) -> list[Video]:
     """Fresh tracks first.
 
     Ordered here rather than at search time so that a cached resolution still
     puts something new in front of the listener.
     """
-    fresh = [v for v in candidate.videos if not holds_track(candidate, v)]
-    held = [v for v in candidate.videos if holds_track(candidate, v)]
+    fresh = [
+        v for v in candidate.videos if not holds_track(v, candidate.owned_titles, keys)
+    ]
+    held = [
+        v for v in candidate.videos if holds_track(v, candidate.owned_titles, keys)
+    ]
     return fresh + held
 
 
-def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist") -> str:
+def build_page(
+    candidates: Sequence[Candidate],
+    library_titles: Sequence[str] = (),
+    title: str = "discolab checklist",
+) -> str:
+    keys = library_keys(library_titles)
     sections = "\n".join(
-        _section(index, candidate) for index, candidate in enumerate(candidates, start=1)
+        _section(index, candidate, keys)
+        for index, candidate in enumerate(candidates, start=1)
     )
     with_embed = sum(1 for candidate in candidates if candidate.videos)
     already_held = sum(
         1
         for candidate in candidates
-        if candidate.videos and holds_track(candidate, ordered_videos(candidate)[0])
+        if candidate.videos
+        and holds_track(
+            ordered_videos(candidate, keys)[0], candidate.owned_titles, keys
+        )
     )
     return f"""<!doctype html>
 <html lang="en">
@@ -412,11 +450,11 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
 """
 
 
-def _section(index: int, candidate: Candidate) -> str:
+def _section(index: int, candidate: Candidate, keys: Sequence[str]) -> str:
     query = urllib.parse.quote(candidate.name)
-    videos = ordered_videos(candidate)
+    videos = ordered_videos(candidate, keys)
     playlist = [
-        {"id": v.video_id, "label": v.label, "held": holds_track(candidate, v)}
+        {"id": v.video_id, "label": v.label, "held": holds_track(v, candidate.owned_titles, keys)}
         for v in videos
     ]
     data_videos = html.escape(json.dumps(playlist, ensure_ascii=False), quote=True)
@@ -436,7 +474,7 @@ def _section(index: int, candidate: Candidate) -> str:
 
     primary = videos[0] if videos else None
     if primary is not None:
-        held = holds_track(candidate, primary)
+        held = holds_track(primary, candidate.owned_titles, keys)
         tag = "already held" if held else "new"
         parts.append(
             f'<div class="player"><iframe class="yt" src="{primary.embed_url}" '

@@ -210,6 +210,7 @@ def check(
         owned = query.owned_tracks_for(
             driver, database, [row["key"] for row in rows], max(tracks, 40)
         )
+        titles = query.library_titles(driver, database)
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
@@ -239,7 +240,7 @@ def check(
         )
         for row in rows
     ]
-    path = write_page(build_page(candidates), out)
+    path = write_page(build_page(candidates, titles), out)
     typer.echo(f"wrote {path}")
 
     if not serve:
