@@ -30,6 +30,7 @@ from .enrich import DeezerEnricher, DeezerError
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .map_view import Cluster
+from .map_view import assign_names
 from .map_view import layout as layout_clusters
 from .map_view import radius_for
 from .map_view import render_page
@@ -1075,8 +1076,7 @@ def map_page(
             ),
             tagged=row["tagged"],
             tags=tuple(
-                tag
-                for tag, _ in sorted(
+                sorted(
                     own_tags_by_cluster.get(row["key"], {}).items(),
                     key=lambda item: (-item[1], item[0]),
                 )[:3]
@@ -1091,6 +1091,7 @@ def map_page(
         for row in sizes
     ]
     clusters.sort(key=lambda cluster: (-cluster.size, cluster.key))
+    assign_names(clusters)
     biggest = max((cluster.size for cluster in clusters), default=1)
     for cluster in clusters:
         cluster.r = radius_for(cluster.size, biggest)

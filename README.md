@@ -80,14 +80,16 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 |---|---|
 | A bubble | One cluster, sized by how many artists it holds, placed so clusters that share artists settle near each other |
 | Its colour | The genre family, so two bubbles of a colour hold the same broad kind of music. The legend lists them with counts |
-| Its label | The family, or two when the cluster splits between them, or `mixed` when it fragments |
+| Its label | The label that cluster leans on most, where it covers enough of the cluster to describe it. No two clusters share a name |
 | Hovering | Names what is under the pointer, and leaves the selection alone |
 | Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
 | The list | Artists the selected clusters point at, ranked by how many of their artists point at each, with which clusters did |
 
 Sixty-odd raw Deezer labels are folded into eight families before anything is named. Electro, Dance, Techno/House and Trance are one family, because naming a cluster after its top raw label spends sixty names on six ideas. The raw labels stay in the panel, where there is room for them.
 
-A cluster takes its family's name when one family carries most of its genre evidence, both names when two split it, and `mixed` when it fragments across several. `enrich --per-cluster N` is what gives the families something to work from: ranking by agreement cannot name a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
+A cluster's name has to do two jobs: describe the cluster and tell it from the other seventy. Naming by the heaviest genre failed the second, leaving six bubbles called Electronic. Naming by the most distinctive failed the first, giving a 2,325-artist cluster the name Blues off thirteen of its artists. So a label needs at least eight per cent of the cluster before it can name it, and the score multiplies that share by how far the cluster over-represents it. Collisions fall through to the runner-up, then to the pair. All seventy-one names are distinct.
+
+`enrich --per-cluster N` is what gives the names something to work from: ranking by agreement cannot name a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
 
 ## Checking the candidates
 

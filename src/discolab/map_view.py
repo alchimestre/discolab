@@ -114,11 +114,14 @@ class Cluster:
     corpus: int
     tagged: int = 0
     genres: tuple[tuple[str, int], ...] = ()
-    tags: tuple[str, ...] = ()
+    tags: tuple[tuple[str, int], ...] = ()
     artists: tuple[str, ...] = ()
     x: float = 0.0
     y: float = 0.0
     r: float = 0.0
+    tag: str = ""
+    name: str = ""
+    candidates: list[str] = field(default_factory=list)
     suggestions: list[dict] = field(default_factory=list)
 
     @property
@@ -141,31 +144,22 @@ class Cluster:
 
     @property
     def label(self) -> str:
-        """What this cluster is, in as few words as the evidence supports.
-
-        One family carrying most of the genre evidence names it. Two families
-        splitting it name both, which informs rather than shrugs. Fragmented
-        across several says mixed. Eight tagged artists is the floor, because
-        below that there is nothing to name it from.
-        """
+        """The assigned name, or the least it can honestly say."""
+        if self.name:
+            return self.name
         if self.tagged < 8:
             return f"cluster {self.key}"
-        found = self.families
-        if not found:
-            return f"cluster {self.key}"
-        total = sum(count for _, count in self.genres) or 1
-        top, count = found[0]
-        share = count / total
-        if share >= 0.55:
-            return top
-        if share >= 0.30 and len(found) > 1:
-            return f"{top} / {found[1][0]}"
-        return "mixed"
+        return self.family
+
+    @property
+    def pool(self) -> tuple[tuple[str, int], ...]:
+        """Every label the cluster carries, its own tags included."""
+        return tuple(self.genres) + tuple(self.tags)
 
     @property
     def sub_genre(self) -> str | None:
         """The owner's own label, when the tags agree on one for this cluster."""
-        return self.tags[0] if self.tags else None
+        return self.tags[0][0] if self.tags else None
 
 
 def radius_for(size: int, largest: int) -> float:
@@ -267,6 +261,58 @@ def layout(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> None:
             moved = max(moved, abs(step_x) + abs(step_y))
         if moved < 0.05:
             break
+
+
+def assign_names(clusters: list[Cluster]) -> None:
+    """Give every cluster a name of its own, that also describes it.
+
+    Naming by the heaviest genre made six bubbles say Electronic, which reads as
+    one area rather than six. Naming by the most distinctive one gave a
+    2,325-artist cluster the name Blues, off thirteen of its artists, and called
+    an electronic cluster Musique arabe. A name has to be both: present enough to
+    describe the cluster, and over-represented enough to tell it from the others.
+
+    So a label must hold at least eight per cent of the cluster before it can
+    name it, and the score multiplies that share by how much the cluster leans on
+    it. Collisions fall through to the runner-up, then to the pair, until every
+    name is unique.
+    """
+    counts: dict[str, int] = {}
+    for cluster in clusters:
+        for name, count in cluster.pool:
+            counts[name] = counts.get(name, 0) + count
+    overall = sum(counts.values()) or 1
+
+    for cluster in clusters:
+        here = sum(count for _, count in cluster.pool) or 1
+        scored = []
+        for name, count in cluster.pool:
+            share = count / here
+            if count < 3 or share < 0.08:
+                continue
+            # Share times distinctiveness: size keeps it descriptive, the ratio
+            # keeps it distinguishing.
+            scored.append((share * (share / (counts[name] / overall)), name))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        names = [name for _, name in scored]
+        if len(names) > 1:
+            names.insert(1, f"{names[0]} & {names[1]}")
+        names += [name for name, _ in cluster.pool if name not in names]
+        names += [cluster.family]
+        cluster.candidates = names
+
+    taken: set[str] = set()
+    # Largest first, so the biggest clusters get the best of contested names.
+    for cluster in sorted(clusters, key=lambda c: (-c.size, c.key)):
+        chosen = ""
+        for candidate in cluster.candidates:
+            if candidate and candidate not in taken:
+                chosen = candidate
+                break
+        if not chosen:
+            chosen = f"cluster {cluster.key}"
+        cluster.name = chosen
+        taken.add(chosen)
 
 
 def _short(label: str, limit: int = 26) -> str:
