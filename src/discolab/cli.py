@@ -203,14 +203,14 @@ def check(
             driver, database, [row["key"] for row in rows], tracks
         )
 
-    videos: dict[str, Video | None] = {}
+    videos: dict[str, list[Video]] = {}
     if youtube:
         for position, row in enumerate(rows, start=1):
             videos[row["name"]] = resolve_artist(row["name"])
             typer.echo(f"  resolved {position}/{len(rows)}", err=True)
             time.sleep(0.4)
-        resolved = sum(1 for video in videos.values() if video is not None)
-        typer.echo(f"embeds resolved: {resolved}/{len(rows)}")
+        with_track = sum(1 for found in videos.values() if found)
+        typer.echo(f"artists with a track resolved: {with_track}/{len(rows)}")
 
     candidates = [
         Candidate(
@@ -220,11 +220,12 @@ def check(
             component_size=row["component_size"],
             degree=row["degree"],
             bridge_score=row["bridge_score"],
+            videos=tuple(videos.get(row["name"], ())),
             tracks=tuple(owned.get(row["key"], [])),
         )
         for row in rows
     ]
-    path = write_page(build_page(candidates, videos), out)
+    path = write_page(build_page(candidates), out)
     typer.echo(f"wrote {path}")
 
     if not serve:

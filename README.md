@@ -40,13 +40,26 @@ uv run discolab stats --islands 15
 
 ## Checking the candidates
 
-`discolab check` writes one HTML page, one section per artist, each with a YouTube embed and links to Spotify, Bandcamp, Discogs and MusicBrainz. Tick the ones worth playing again and the header counts them.
+`discolab check` writes one HTML page, one section per artist, with links to Spotify, YouTube, Bandcamp, Discogs and MusicBrainz. Tick the ones worth playing again and the header counts them.
 
-The kill criterion is on that page. Under 3 of 25 kept means the query is wrong, the data is too thin, or blank space between clusters is not fertile. Write the outcome down before changing anything.
+Each section embeds one official track, chosen by these rules:
+
+| Rule | Reason |
+|---|---|
+| Single tracks only | Sets, mixes and full albums are rejected on title, or on a length above 15 minutes |
+| The artist's own channel, or their distributor's Topic channel | A name search returns fan re-uploads first |
+| A verified channel only when the title opens with the artist's name | Verified businesses re-upload anything |
+| Several uploads listed per artist | Uploaders can block embedding |
+
+The page listens for the YouTube player's error event, so an upload that blocks embedding is replaced by a thumbnail and a link instead of a dead frame. The header reports how many were blocked.
+
+An artist with no official upload gets no embed rather than a re-upload. `Humanoids` on the sample library is one.
+
+The kill criterion is on that page. Fewer than 3 of 25 kept means the query is wrong, the data is too thin, or blank space between clusters is not fertile. Write the outcome down before changing anything.
 
 The page is written to `out/`, which is not committed, and it lists local file paths.
 
-Resolving the embeds is the only step that touches the network. Pass `--no-youtube` to keep the whole run offline.
+Resolving the embeds is the only step that touches the network, and `--no-youtube` keeps the whole run offline. The page must be served rather than opened from disk: a `file://` page sends no referrer and YouTube rejects the embed with error 153. Serving is the default.
 
 ## Configuration
 
@@ -90,6 +103,7 @@ Filenames are read as `Artist - Title`. Credits are parsed from that text.
 - Container edges are ignored for containers holding fewer than 2 or more than 80 distinct artists, since the wide ones make everything co-occur.
 - Entity resolution is name-based. Aliases such as `Sterac aka Steve Rachmad` and `Sterac, Steve Rachmad` remain separate artists.
 - No play counts are read, so unplayed cannot yet be defined.
+- A verified channel that curates rather than releases is accepted when the title opens with the artist's name. Telling a label from a curator needs label data the graph does not hold yet.
 - Measured on a 1824 file library of loose tracks: 450 of 1225 artists connected, 775 isolated, 157 islands, largest island 24 artists.
 
 ## Exploring in Neo4j
