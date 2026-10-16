@@ -420,6 +420,10 @@ PAGE = """<!doctype html>
                           border-radius: 9px; border: 1px solid var(--line);
                           background: transparent; color: var(--ink); }
   ol.suggestions { list-style: none; margin: 0; padding: 0; }
+  p.tier { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+           color: var(--quiet); margin: 16px 0 2px; }
+  p.tier:first-of-type { margin-top: 4px; }
+  ol.suggestions .from { color: var(--quiet); }
   ol.suggestions li { padding: 9px 0; border-top: 1px solid var(--line); }
   ol.suggestions .name { font-weight: 600; }
   ol.suggestions .why { font-size: 12px; color: var(--quiet); }
@@ -495,8 +499,14 @@ function emphasise() {
   }
 }
 
-// One list for however many clusters are on. A suggestion several of them point
-// at moves up, which is the agreement rule the rest of the project runs on.
+// One list for however many clusters are on, read the way the selection reads:
+// first what a single selected cluster points at, then what several point at,
+// which is the ground between them. Within a tier, the artist more of the
+// selection points at comes first.
+//
+// The pool is the union of every selected cluster's own list, not a top slice of
+// it, so an artist that is middling in two clusters surfaces where it would miss
+// the cut in either alone.
 function combined() {
   const totals = new Map();
   for (const key of picked) {
@@ -504,13 +514,22 @@ function combined() {
     if (!c) continue;
     for (const s of c.suggestions) {
       const row = totals.get(s.name) ||
-        { name: s.name, agreement: 0, styles: s.styles, via: s.via, from: [] };
-      row.agreement += s.agreement;
-      if (!row.from.includes(c.label)) row.from.push(c.label);
+        { name: s.name, pointers: 0, styles: s.styles, via: s.via, fromKeys: [], from: [] };
+      row.pointers += s.agreement;
+      if (!row.fromKeys.includes(c.key)) {
+        row.fromKeys.push(c.key);
+        row.from.push(c.label);
+      }
       totals.set(s.name, row);
     }
   }
-  return [...totals.values()].sort((a, b) => b.agreement - a.agreement).slice(0, 24);
+  const rows = [...totals.values()];
+  const byPointers = (a, b) => b.pointers - a.pointers;
+  return {
+    direct: rows.filter(r => r.fromKeys.length === 1).sort(byPointers),
+    between: rows.filter(r => r.fromKeys.length > 1)
+      .sort((a, b) => b.fromKeys.length - a.fromKeys.length || byPointers(a, b)),
+  };
 }
 
 function renderPanel() {
@@ -544,15 +563,32 @@ function renderPanel() {
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
     esc(c.label) + ' ×</button>').join('');
-  const rows = combined();
-  const body = rows.length
-    ? '<ol class="suggestions">' + rows.map(s => {
-        const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
-        return '<li><div class="name">' + esc(s.name) + '</div>' +
-          '<div class="why">' + s.agreement + ' pointing artists across ' +
-          s.from.map(esc).join(', ') + (s.via ? ' · ' + esc(s.via) : '') + '</div>' +
-          (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
-      }).join('') + '</ol>'
+  const tiers = combined();
+  const suggest = s => {
+    const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
+    const where = s.from.length > 1
+      ? ' across ' + s.from.length + ' selections: ' + s.from.map(esc).join(', ')
+      : ' from ' + esc(s.from[0] || '');
+    return '<li><div class="name">' + esc(s.name) + '</div>' +
+      '<div class="why">' + s.pointers + ' pointing artists' + where +
+      (s.via ? ' · ' + esc(s.via) : '') + '</div>' +
+      (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
+  };
+  const parts = [];
+  if (tiers.direct.length) {
+    if (picked.size > 1) {
+      parts.push('<p class="tier">Directly from one selected cluster</p>');
+    }
+    parts.push('<ol class="suggestions">' +
+      tiers.direct.slice(0, 20).map(suggest).join('') + '</ol>');
+  }
+  if (tiers.between.length) {
+    parts.push('<p class="tier">Between them, pointed at by more than one</p>');
+    parts.push('<ol class="suggestions">' +
+      tiers.between.slice(0, 20).map(suggest).join('') + '</ol>');
+  }
+  const body = parts.length
+    ? parts.join('')
     : '<p class="empty">Nothing reaches these clusters yet.</p>';
   scope.innerHTML = head + '<div class="picked">' + chips + '</div>' + body;
   for (const button of scope.querySelectorAll('[data-drop]')) {

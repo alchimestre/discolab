@@ -965,7 +965,10 @@ def check(
 def map_page(
     out: Path = typer.Option(Path("out/map.html"), "--out", help="Page to write."),
     suggestions: int = typer.Option(
-        14, "--suggestions", help="Suggestions to carry per cluster."
+        40,
+        "--suggestions",
+        help="Suggestions to carry per cluster. The panel combines and ranks them, "
+        "so a thin list per cluster caps what a selection can surface.",
     ),
     serve: bool = typer.Option(
         True, "--serve/--no-serve", help="Serve the page."
