@@ -382,6 +382,7 @@ def build_page(
     library_titles: Sequence[str] = (),
     votes: dict[str, dict] | None = None,
     title: str = "discolab checklist",
+    nav: str = "",
 ) -> str:
     keys = library_keys(library_titles)
     saved = votes or {}
@@ -444,6 +445,7 @@ def build_page(
   Criterion: fewer than 3 new tracks kept means the query is wrong, the data is too thin, or blank space is not fertile.
 </div>
 <h1>{html.escape(title)}</h1>
+{nav}
 <p>One embed per artist, plus alternative official uploads and links to the other catalogues. Tick the ones worth playing again. Only tracks from the artist's own, distributor or verified channel are embedded. If an uploader blocked embedding the page moves to the next official upload, and only falls back to a link when none of them play.</p>
 {sections}
 <script>
@@ -759,6 +761,51 @@ def read_votes(path: Path) -> dict[str, dict]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def build_cluster_index(
+    clusters: Sequence[dict], built: Sequence[int], title: str = "discolab clusters"
+) -> str:
+    """An index of the taste clusters, linking to the pages that exist."""
+    ready = set(built)
+    rows = []
+    for cluster in clusters:
+        styles = ", ".join(cluster["styles"][:4]) or "no styles yet"
+        members = ", ".join(cluster["members"][:5])
+        link = (
+            f'<a href="cluster-{cluster["cluster"]}.html">{cluster["size"]} artists</a>'
+            if cluster["cluster"] in ready
+            else f'{cluster["size"]} artists'
+        )
+        rows.append(
+            "<tr>"
+            f'<td>{cluster["cluster"]}</td><td>{link}</td>'
+            f"<td>{html.escape(styles)}</td><td>{html.escape(members)}</td>"
+            "</tr>"
+        )
+    return f"""<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)}</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font: 15px/1.5 system-ui, sans-serif; max-width: 1080px; margin: 0 auto; padding: 24px; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ text-align: left; padding: 6px 10px 6px 0; vertical-align: top;
+            border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }}
+  th {{ font-size: 13px; opacity: .7; }}
+  td:nth-child(4) {{ font-size: 13px; opacity: .8; }}
+</style>
+<h1>{html.escape(title)}</h1>
+<p>A cluster is a group of artists that co-occur in your own listening. Pick one to see what it
+leads to, or open its periphery to see the members that barely connect to it.</p>
+<table>
+<tr><th>cluster</th><th>frontier</th><th>usual styles</th><th>biggest members</th></tr>
+{''.join(rows)}
+</table>
+</html>
+"""
 
 
 def serve_directory(

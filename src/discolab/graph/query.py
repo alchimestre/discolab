@@ -165,6 +165,99 @@ def artist_sources(
     return {record["key"]: dict(record) for record in records}
 
 
+def clusters(
+    driver: Driver, database: str, limit: int = 40, sample: int = 6
+) -> list[dict]:
+    """The taste clusters, largest first, with their members and usual styles."""
+    sizes = {
+        record["cluster"]: dict(record)
+        for record in driver.execute_query(
+            """
+            MATCH (a:Artist)
+            WHERE a.community >= 0 AND coalesce(a.external, false) = false
+            WITH a.community AS cluster, a
+            ORDER BY a.degree DESC, a.name
+            WITH cluster, collect(a.name)[0..$sample] AS members, count(*) AS size
+            RETURN cluster, size, members
+            ORDER BY size DESC
+            LIMIT $limit
+            """,
+            sample=sample,
+            limit=limit,
+            database_=database,
+        ).records
+    }
+    if not sizes:
+        return []
+
+    styles: dict[int, list[str]] = {}
+    for record in driver.execute_query(
+        """
+        MATCH (a:Artist) WHERE a.community >= 0
+        UNWIND coalesce(a.discogs_styles, []) AS style
+        WITH a.community AS cluster, style, count(*) AS n
+        ORDER BY n DESC
+        WITH cluster, collect(style)[0..5] AS top_styles
+        RETURN cluster, top_styles
+        """,
+        database_=database,
+    ).records:
+        styles[record["cluster"]] = record["top_styles"]
+
+    for cluster, entry in sizes.items():
+        entry["styles"] = styles.get(cluster, [])
+    return sorted(sizes.values(), key=lambda entry: -entry["size"])
+
+
+def cluster_frontier(
+    driver: Driver, database: str, cluster: int, limit: int = 25
+) -> list[dict]:
+    """Artists outside the corpus reached from one cluster's seeds.
+
+    Scoping to a cluster answers a different question from the global ranking:
+    not what the whole taste agrees on, but what this corner of it leads to.
+    """
+    records = driver.execute_query(
+        """
+        MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
+        WHERE s.community = $cluster AND coalesce(e.external, false) = true
+        WITH e, count(DISTINCT s) AS seed_count, max(r.score) AS best_score,
+             collect(DISTINCT s.name)[0..4] AS seed_names
+        RETURN e.key AS key, e.name AS name, seed_count, best_score, seed_names
+        ORDER BY best_score DESC, seed_count DESC
+        LIMIT $limit
+        """,
+        cluster=cluster,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
+def cluster_periphery(
+    driver: Driver, database: str, cluster: int, limit: int = 25
+) -> list[dict]:
+    """The cluster's own artists that barely connect to it.
+
+    A member with one edge sits at the edge of the taste rather than in it,
+    which is where something recognisable but rarely played tends to live.
+    """
+    records = driver.execute_query(
+        """
+        MATCH (a:Artist)
+        WHERE a.community = $cluster AND coalesce(a.external, false) = false
+        RETURN a.key AS key, a.name AS name, a.community AS community,
+               coalesce(a.degree, 0) AS degree, coalesce(a.bridge_score, 0.0) AS bridge_score
+        ORDER BY degree ASC, a.name
+        LIMIT $limit
+        """,
+        cluster=cluster,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def artist_tempo(
     driver: Driver, database: str, keys: Sequence[str]
 ) -> dict[str, dict]:
@@ -186,13 +279,19 @@ def artist_tempo(
 
 
 def artists_needing_discogs(
-    driver: Driver, database: str, limit: int, external_only: bool = False
+    driver: Driver,
+    database: str,
+    limit: int,
+    external_only: bool = False,
+    min_agreement: int = 2,
 ) -> list[dict]:
     """Artists Discogs has not been asked about, the ones that can surface first.
 
-    Enriching all 2,770 expansion artists costs forty-eight minutes at one
-    request a second. Only a few hundred carry enough agreement to reach a
-    page, so they are asked about in that order and the rest wait behind them.
+    Defaults to artists two or more seeds agree on, because those are the only
+    ones that can reach a page. The 2,410 single-seed tail is forty minutes at
+    sixty requests a minute and cannot change any output.
+
+    `min_agreement=0` walks everything, for the rare case where that is wanted.
     """
     clause = "AND coalesce(a.external, false) = true" if external_only else ""
     records = driver.execute_query(
@@ -200,10 +299,12 @@ def artists_needing_discogs(
         MATCH (a:Artist)
         WHERE coalesce(a.discogs_checked, false) = false {clause}
         WITH a, size([(seed:Artist)-[:SIMILAR_TO]->(a) | seed]) AS agreement
+        WHERE agreement >= $min_agreement
         ORDER BY agreement DESC, a.name
         LIMIT $limit
         RETURN a.key AS key, a.name AS name, agreement
         """,
+        min_agreement=min_agreement,
         limit=limit,
         database_=database,
     ).records

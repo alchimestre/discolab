@@ -15,6 +15,7 @@ import typer
 from .check import (
     Candidate,
     Video,
+    build_cluster_index,
     build_page,
     load_video_cache,
     read_votes,
@@ -404,6 +405,11 @@ def enrich(
     keep_going: bool = typer.Option(
         False, "--keep-going", help="Repeat until every artist has been asked about."
     ),
+    min_agreement: int = typer.Option(
+        2,
+        "--min-agreement",
+        help="Only ask about artists this many seeds point at. 0 walks the whole tail.",
+    ),
     refresh: bool = typer.Option(
         False, "--refresh", help="Ask again about artists already done. Fixes stored noise."
     ),
@@ -424,11 +430,17 @@ def enrich(
         if refresh:
             with store.connect(settings) as driver:
                 store.clear_discogs_flag(driver, settings.neo4j_database, external_only)
-        _enrich_artists_from_discogs(settings, limit, external_only, keep_going)
+        _enrich_artists_from_discogs(
+            settings, limit, external_only, keep_going, min_agreement
+        )
 
 
 def _enrich_artists_from_discogs(
-    settings: Settings, limit: int, external_only: bool, keep_going: bool = False
+    settings: Settings,
+    limit: int,
+    external_only: bool,
+    keep_going: bool = False,
+    min_agreement: int = 2,
 ) -> None:
     """Walk the artists Discogs has not been asked about, writing as it goes.
 
@@ -446,7 +458,7 @@ def _enrich_artists_from_discogs(
     while True:
         with store.connect(settings) as driver:
             pending = query.artists_needing_discogs(
-                driver, settings.neo4j_database, limit, external_only
+                driver, settings.neo4j_database, limit, external_only, min_agreement
             )
         if not pending:
             break
@@ -587,6 +599,95 @@ def _genre_terms(genre: str) -> tuple[str, ...]:
     if text.casefold() == "electronic":
         text = ELECTRONIC_TAGS
     return tuple(tag.strip().casefold() for tag in text.split(",") if tag.strip())
+
+
+@app.command()
+def clusters(
+    limit: int = typer.Option(40, "--limit", help="Clusters to list."),
+    pages: bool = typer.Option(
+        False, "--pages", help="Write an index and one frontier page per cluster."
+    ),
+    per_cluster: int = typer.Option(12, "--per-cluster", help="Candidates per cluster page."),
+    out: Path = typer.Option(Path("out"), "--out", help="Where the pages go."),
+    youtube: bool = typer.Option(
+        True, "--youtube/--no-youtube", help="Resolve an embed per candidate."
+    ),
+    cache: Path = typer.Option(
+        Path("out/videos.json"), "--cache", help="Resolved videos, reused across runs."
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Ignore the cache."),
+) -> None:
+    """List the taste clusters, and optionally build a page for each."""
+    settings = _settings([])
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        rows = query.clusters(driver, database, limit)
+        if not rows:
+            typer.echo("no clusters: run `discolab derive` first", err=True)
+            raise typer.Exit(code=2)
+        if not pages:
+            for row in rows:
+                typer.echo(f"{row['cluster']:>4}  {row['size']:>5}  {', '.join(row['styles'][:4])}")
+                typer.echo(f"      {', '.join(row['members'][:5])}")
+            return
+        titles = query.library_titles(driver, database)
+        videos = {} if refresh else load_video_cache(cache)
+        built: list[int] = []
+        for row in rows:
+            cluster = row["cluster"]
+            candidates = query.cluster_frontier(driver, database, cluster, per_cluster)
+            if not candidates:
+                continue
+            if youtube:
+                for candidate in candidates:
+                    if candidate["name"] not in videos:
+                        videos[candidate["name"]] = resolve_artist(candidate["name"])
+                        time.sleep(0.4)
+            keys = [c["key"] for c in candidates]
+            sources = query.artist_sources(driver, database, keys)
+            tempo = query.artist_tempo(driver, database, keys)
+            votes = read_votes(out / "votes.json")
+            nav = f'<p><a href="index.html">all clusters</a> · cluster {cluster}</p>'
+            page = build_page(
+                [
+                    Candidate(
+                        name=c["name"],
+                        community=cluster,
+                        component=0,
+                        component_size=0,
+                        degree=c.get("seed_count", 0),
+                        bridge_score=c.get("best_score", 0.0),
+                        videos=tuple(videos.get(c["name"], ())),
+                        tracks=(),
+                        known_titles=(),
+                        seeds=tuple(c.get("seed_names") or ()),
+                        external=True,
+                        source_kind="cluster",
+                        seed_count=c.get("seed_count", 0),
+                        areas=1,
+                        styles=tuple(sources.get(c["key"], {}).get("styles", ())),
+                        labels=tuple(sources.get(c["key"], {}).get("labels", ())),
+                        bpm_low=tempo.get(c["key"], {}).get("low"),
+                        bpm_high=tempo.get(c["key"], {}).get("high"),
+                        musical_keys=tuple(tempo.get(c["key"], {}).get("musical_keys") or ()),
+                    )
+                    for c in candidates
+                ],
+                titles,
+                votes,
+                title=f"cluster {cluster} frontier",
+                nav=nav,
+            )
+            write_page(page, out / f"cluster-{cluster}.html")
+            built.append(cluster)
+        if youtube:
+            save_video_cache(cache, videos)
+        write_page(
+            build_cluster_index(rows, built),
+            out / "index.html",
+        )
+    typer.echo(f"wrote {out}/index.html and {len(built)} cluster pages")
+    typer.echo(f"serve with: uv run discolab check --no-youtube --serve")
 
 
 @app.command()
@@ -792,6 +893,17 @@ def check(
         "--discogs/--no-discogs",
         help="Ask Discogs about the candidates for styles and labels. One request each.",
     ),
+    cluster: int = typer.Option(
+        -1,
+        "--cluster",
+        help="Scope the page to one cluster. -1 ranks across the whole taste.",
+    ),
+    periphery: bool = typer.Option(
+        False,
+        "--periphery",
+        help="With --cluster, show that cluster's own weakly connected artists instead "
+        "of its frontier.",
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -805,7 +917,13 @@ def check(
     settings = _settings([])
     with store.connect(settings) as driver:
         database = settings.neo4j_database
-        if source == "external":
+        if cluster >= 0 and periphery:
+            rows = query.cluster_periphery(driver, database, cluster, limit)
+            source = "bridge"
+        elif cluster >= 0:
+            rows = query.cluster_frontier(driver, database, cluster, limit)
+            source = "external"
+        elif source == "external":
             wanted = _genre_terms(genre)
             # Nothing here waits on a network call. Genre filtering reads what
             # the background enrichment has already written, and the enrichment
@@ -864,7 +982,7 @@ def check(
             ),
             seeds=tuple(row.get("seed_names") or row.get("via") or ()),
             external=source in ("external", "labels"),
-            source_kind=source,
+            source_kind="cluster" if cluster >= 0 else source,
             seed_count=row.get("seed_count", row.get("labels", 0)),
             areas=row.get("areas", 0),
             styles=tuple(sources.get(row["key"], {}).get("styles", ())),
