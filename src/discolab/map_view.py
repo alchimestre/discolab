@@ -540,9 +540,6 @@ PAGE = """<!doctype html>
                           border-radius: 9px; border: 1px solid var(--line);
                           background: transparent; color: var(--ink); }
   ol.suggestions { list-style: none; margin: 0; padding: 0; }
-  p.tier { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-           color: var(--quiet); margin: 16px 0 2px; }
-  p.tier:first-of-type { margin-top: 4px; }
   ol.suggestions .from { color: var(--quiet); }
   ol.suggestions li { padding: 9px 0; border-top: 1px solid var(--line); }
   ol.suggestions .name { font-weight: 600; }
@@ -619,14 +616,10 @@ function emphasise() {
   }
 }
 
-// One list for however many clusters are on, read the way the selection reads:
-// first what a single selected cluster points at, then what several point at,
-// which is the ground between them. Within a tier, the artist more of the
-// selection points at comes first.
-//
-// The pool is the union of every selected cluster's own list, not a top slice of
-// it, so an artist that is middling in two clusters surfaces where it would miss
-// the cut in either alone.
+// One cluster is asked a simple question: what does it point at. Two or more are
+// asked something else, and answering it with one cluster's private list is not
+// an answer. So a selection of several shows only what more than one of them
+// points at, and shows nothing at all when that is empty.
 function combined() {
   const totals = new Map();
   for (const key of picked) {
@@ -644,12 +637,12 @@ function combined() {
     }
   }
   const rows = [...totals.values()];
-  const byPointers = (a, b) => b.pointers - a.pointers;
-  return {
-    direct: rows.filter(r => r.fromKeys.length === 1).sort(byPointers),
-    between: rows.filter(r => r.fromKeys.length > 1)
-      .sort((a, b) => b.fromKeys.length - a.fromKeys.length || byPointers(a, b)),
-  };
+  if (picked.size < 2) {
+    return rows.sort((a, b) => b.pointers - a.pointers);
+  }
+  return rows
+    .filter(r => r.fromKeys.length > 1)
+    .sort((a, b) => b.fromKeys.length - a.fromKeys.length || b.pointers - a.pointers);
 }
 
 function renderPanel() {
@@ -683,33 +676,28 @@ function renderPanel() {
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
     esc(c.label) + ' ×</button>').join('');
-  const tiers = combined();
+  const rows = combined();
   const suggest = s => {
     const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
     const where = s.from.length > 1
-      ? ' across ' + s.from.length + ' selections: ' + s.from.map(esc).join(', ')
+      ? ' across ' + s.from.length + ' of the selections: ' + s.from.map(esc).join(', ')
       : ' from ' + esc(s.from[0] || '');
     return '<li><div class="name">' + esc(s.name) + '</div>' +
       '<div class="why">' + s.pointers + ' pointing artists' + where +
       (s.via ? ' · ' + esc(s.via) : '') + '</div>' +
       (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
   };
-  const parts = [];
-  if (tiers.direct.length) {
-    if (picked.size > 1) {
-      parts.push('<p class="tier">Directly from one selected cluster</p>');
-    }
-    parts.push('<ol class="suggestions">' +
-      tiers.direct.slice(0, 20).map(suggest).join('') + '</ol>');
+  let body;
+  if (rows.length) {
+    body = '<ol class="suggestions">' + rows.slice(0, 40).map(suggest).join('') + '</ol>';
+  } else if (picked.size > 1) {
+    body = '<p class="empty">Nothing is pointed at by more than one of these ' +
+      picked.size + ' clusters. Individually they suggest plenty; together they ' +
+      'suggest nothing.</p>';
+  } else {
+    body = '<p class="empty">Nothing reaches this cluster yet. Expanding from it ' +
+      'would find candidates.</p>';
   }
-  if (tiers.between.length) {
-    parts.push('<p class="tier">Between them, pointed at by more than one</p>');
-    parts.push('<ol class="suggestions">' +
-      tiers.between.slice(0, 20).map(suggest).join('') + '</ol>');
-  }
-  const body = parts.length
-    ? parts.join('')
-    : '<p class="empty">Nothing reaches these clusters yet.</p>';
   scope.innerHTML = head + '<div class="picked">' + chips + '</div>' + body;
   for (const button of scope.querySelectorAll('[data-drop]')) {
     button.addEventListener('click', () => {
@@ -816,10 +804,8 @@ svg.addEventListener('dblclick', () => {
   zoom = 1; offset = { x: 0, y: 0 }; applyView(); revealInner();
 });
 
-// The panel used to open empty, which reads as having no suggestions at all.
-// The largest cluster is picked for you so there is always something to read.
-const biggest = DATA.clusters.slice().sort((a, b) => b.size - a.size)[0];
-if (biggest) picked.add(biggest.key);
+// Nothing is selected on load. Choosing is the point, and a pre-picked cluster
+// made the first click remove it.
 applyView();
 emphasise();
 renderPanel();
