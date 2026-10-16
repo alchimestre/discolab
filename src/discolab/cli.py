@@ -368,7 +368,7 @@ def guess(
         refresh=False,
         votes=Path("out/votes.json"),
         source="external",
-        min_areas=0,
+        min_areas=3,
         cluster=-1,
         periphery=False,
         serve=serve,
@@ -842,9 +842,11 @@ def check(
         help="bridge ranks your own artists; external lists artists you do not have.",
     ),
     min_areas: int = typer.Option(
-        0,
+        3,
         "--min-areas",
-        help="Require this many separate taste areas to agree. 2 is the useful setting.",
+        help="Require this many separate taste areas to agree. 2 lets a tight group "
+        "of seeds that share nothing else put its own candidates on the page; "
+        "measured, 3 removes them and 4 changes nothing further.",
     ),
     cluster: int = typer.Option(
         -1,

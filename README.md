@@ -222,6 +222,8 @@ uv run discolab check --source external
 
 One seed suggesting an artist says almost nothing, and that is most of a similarity list. Several seeds agreeing says more, and seeds in different clusters agreeing says most. The page is ordered by how many seeds agree, most first, and shows how many areas they came from.
 
+Requiring only two areas let a group of relaxation and singing-bowl seeds put ten of the top twenty-five on the page, every one of them bridging that group and nothing else. Three areas removed all ten; four changed nothing further. Three is the default.
+
 Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the page.
 
 ## Enriching
