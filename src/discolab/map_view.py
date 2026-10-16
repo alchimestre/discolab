@@ -128,6 +128,7 @@ class Cluster:
     candidates: list[str] = field(default_factory=list)
     options: list[tuple[str, str]] = field(default_factory=list)
     suggestions: list[dict] = field(default_factory=list)
+    inner: list[dict] = field(default_factory=list)
 
     @property
     def families(self) -> tuple[tuple[str, int], ...]:
@@ -335,6 +336,36 @@ def assign_names(clusters: list[Cluster]) -> None:
         taken.add(chosen)
 
 
+def place_inner(cluster: Cluster, groups: list[list[tuple[str, str]]]) -> None:
+    """Lay a cluster's sub-groups out inside its own circle.
+
+    Positions are a ring, sized by membership, so the sub-groups read as parts of
+    the bubble rather than as a second map. Revealed on zoom, because at rest the
+    cluster is the unit that matters.
+    """
+    if not groups:
+        return
+    biggest = max(len(group) for group in groups)
+    ring = cluster.r * 0.42
+    placed = []
+    for index, group in enumerate(groups):
+        angle = (index / len(groups)) * math.tau - math.pi / 2
+        radius = max(4.0, cluster.r * 0.34 * math.sqrt(len(group) / biggest))
+        # The name is the group's most connected member, which is the one that
+        # says most about what the sub-group is.
+        placed.append(
+            {
+                "name": group[0][1],
+                "size": len(group),
+                "x": cluster.x + math.cos(angle) * ring,
+                "y": cluster.y + math.sin(angle) * ring,
+                "r": radius,
+                "colour": cluster.colour,
+            }
+        )
+    cluster.inner = placed
+
+
 def _short(label: str, limit: int = 26) -> str:
     """Trim to a word boundary, so a bubble never reads like a typo."""
     if len(label) <= limit:
@@ -395,6 +426,20 @@ def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> 
             f"{text}</g>"
         )
 
+    # Sub-groups, drawn but hidden until the map is zoomed far enough to read them.
+    inner = []
+    for cluster in clusters:
+        for part in cluster.inner:
+            inner.append(
+                f'<g class="inner-bubble">'
+                f"<title>{html.escape(part['name'])} · {part['size']} artists</title>"
+                f'<circle cx="{part["x"]:.1f}" cy="{part["y"]:.1f}" r="{part["r"]:.1f}" '
+                f'fill="{part["colour"]}" fill-opacity="0.55" stroke="{part["colour"]}"/>'
+                f'<text x="{part["x"]:.1f}" y="{part["y"]:.1f}" text-anchor="middle" '
+                f'dominant-baseline="central">'
+                f"{html.escape(part['name'][:16])}</text></g>"
+            )
+
     # Fit the viewBox to the bubbles rather than to a square, so the map uses the
     # whole pane instead of sitting in it with margins.
     left = min(c.x - c.r for c in clusters)
@@ -408,6 +453,7 @@ def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> 
         f'preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">'
         f'<g id="edges">{"".join(lines)}</g>'
         f'<g id="bubbles">{"".join(bubbles)}</g>'
+        f'<g id="inner" style="display:none">{"".join(inner)}</g>'
         f"</svg>"
     )
 
@@ -468,6 +514,12 @@ PAGE = """<!doctype html>
   .bubble:hover text, .bubble:focus-visible text { opacity: 1; }
   .bubble.active circle { stroke-width: 3.6; fill-opacity: .72; }
   .bubble.dimmed { opacity: .45; }
+  .bubble.open circle { fill-opacity: .12; }
+  .bubble.open text { display: none; }
+  .inner-bubble circle { stroke-width: 1.2; pointer-events: none; }
+  .inner-bubble text { fill: var(--ink); opacity: .95; pointer-events: none;
+                       font-size: var(--inner-label, 10px);
+                       paint-order: stroke; stroke: Canvas; stroke-width: 2px; }
   .bubble:focus { outline: none; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
@@ -698,16 +750,37 @@ let moved = 0;
 let drag = null;
 
 function applyView() {
+  const w = home.w / zoom;
   svg.setAttribute('viewBox',
-    (home.x - offset.x) + ' ' + (home.y - offset.y) + ' ' +
-    (home.w / zoom) + ' ' + (home.h / zoom));
+    (home.x - offset.x) + ' ' + (home.y - offset.y) + ' ' + w + ' ' + (home.h / zoom));
+  // Labels are drawn in graph units, so they grow with the zoom. Scaling the
+  // font the other way keeps them the same size on screen at any depth.
+  const unitsPerPixel = w / Math.max(1, svg.clientWidth);
+  svg.style.setProperty('--inner-label', (11 * unitsPerPixel).toFixed(2) + 'px');
+}
+
+// The sub-groups inside a cluster are unreadable at rest and obvious up close,
+// so they appear once the zoom can carry them and the parent steps back.
+function revealInner() {
+  const show = zoom >= 2.4;
+  document.getElementById('inner').style.display = show ? '' : 'none';
+  for (const b of bubbles) b.classList.toggle('open', show);
 }
 
 svg.addEventListener('wheel', event => {
   event.preventDefault();
-  const factor = Math.exp(-event.deltaY * 0.0016);
-  zoom = Math.min(20, Math.max(0.5, zoom * factor));
+  const rect = svg.getBoundingClientRect();
+  const px = (event.clientX - rect.left) / Math.max(1, rect.width);
+  const py = (event.clientY - rect.top) / Math.max(1, rect.height);
+  const w0 = home.w / zoom, h0 = home.h / zoom;
+  const x0 = home.x - offset.x, y0 = home.y - offset.y;
+  // The graph point under the cursor, held still while everything scales around it.
+  const gx = x0 + px * w0, gy = y0 + py * h0;
+  zoom = Math.min(24, Math.max(0.5, zoom * Math.exp(-event.deltaY * 0.0016)));
+  offset.x = home.x - (gx - px * (home.w / zoom));
+  offset.y = home.y - (gy - py * (home.h / zoom));
   applyView();
+  revealInner();
 }, { passive: false });
 
 svg.addEventListener('pointerdown', event => {
@@ -727,9 +800,14 @@ svg.addEventListener('pointermove', event => {
 svg.addEventListener('pointerup', () => { drag = null; });
 svg.addEventListener('pointercancel', () => { drag = null; });
 svg.addEventListener('dblclick', () => {
-  zoom = 1; offset = { x: 0, y: 0 }; applyView();
+  zoom = 1; offset = { x: 0, y: 0 }; applyView(); revealInner();
 });
 
+// The panel used to open empty, which reads as having no suggestions at all.
+// The largest cluster is picked for you so there is always something to read.
+const biggest = DATA.clusters.slice().sort((a, b) => b.size - a.size)[0];
+if (biggest) picked.add(biggest.key);
+applyView();
 emphasise();
 renderPanel();
 </script>

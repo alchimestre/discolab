@@ -3,6 +3,8 @@ from __future__ import annotations
 import concurrent.futures
 import math
 import os
+
+import networkx as nx
 import secrets
 import subprocess
 import threading
@@ -32,6 +34,7 @@ from .expand import LastfmSimilarExpander
 from .map_view import Cluster
 from .map_view import assign_names
 from .map_view import layout as layout_clusters
+from .map_view import place_inner
 from .map_view import radius_for
 from .map_view import render_page
 from .graph import derive, load, query, store
@@ -1041,6 +1044,22 @@ def map_page(
             """,
             database_=database,
         ).records
+        artist_rows = driver.execute_query(
+            """
+            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
+            RETURN a.key AS key, a.community AS community, a.name AS name,
+                   coalesce(a.degree, 0) AS degree
+            """,
+            database_=database,
+        ).records
+        sim_edges = driver.execute_query(
+            """
+            MATCH (a:Artist)-[r:SIMILAR_TO]-(b:Artist)
+            WHERE a.key < b.key
+            RETURN a.key AS source, b.key AS target, coalesce(r.score, 1) AS weight
+            """,
+            database_=database,
+        ).records
 
     genres: dict[int, dict[str, int]] = {}
     for row in members:
@@ -1106,6 +1125,41 @@ def map_page(
 
     weights = [(row["a"], row["b"], row["weight"]) for row in links]
     layout_clusters(clusters, weights)
+
+    # Sub-structure inside each cluster: the same community detection one level
+    # down, on the cluster's own members. Organic by construction, since nothing
+    # but the graph decides where the divisions fall.
+    graph = nx.Graph()
+    for row in sim_edges:
+        graph.add_edge(row["source"], row["target"], weight=row["weight"])
+    name_of = {row["key"]: row["name"] for row in artist_rows}
+    degree_of = {row["key"]: row["degree"] for row in artist_rows}
+    by_community: dict[int, list[str]] = {}
+    for row in artist_rows:
+        by_community.setdefault(row["community"], []).append(row["key"])
+
+    for cluster in clusters:
+        keys = by_community.get(cluster.key, [])
+        if len(keys) < 6:
+            continue
+        found = nx.community.louvain_communities(
+            graph.subgraph(keys), weight="weight", resolution=1.1, seed=42
+        )
+        groups = sorted(found, key=len, reverse=True)[:9]
+        if len(groups) < 2:
+            continue
+        place_inner(
+            cluster,
+            [
+                [
+                    (key, name_of.get(key, key))
+                    for key in sorted(
+                        group, key=lambda k: (-degree_of.get(k, 0), name_of.get(k, ""))
+                    )
+                ]
+                for group in groups
+            ],
+        )
 
     page = render_page("Your taste, as clusters", clusters, weights)
     out.parent.mkdir(parents=True, exist_ok=True)
