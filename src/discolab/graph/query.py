@@ -296,6 +296,38 @@ def _pending_genres_body(external_only: bool) -> str:
     """
 
 
+def artists_by_cluster_centrality(
+    driver: Driver,
+    database: str,
+    per_cluster: int,
+    limit: int = 20000,
+) -> list[dict]:
+    """The most connected artists of every cluster, a few each.
+
+    Agreement across seeds cannot name a cluster: the artists that define one are
+    the ones it is built around, not the ones most seeds point at. Taking the top
+    few per cluster is a bounded set that covers every cluster, where ranking by
+    agreement covers the busiest corner of the graph and leaves the rest blank.
+    """
+    records = driver.execute_query(
+        f"""
+        MATCH (a:Artist)
+        WHERE coalesce(a.enriched, false) = false
+          AND a.community IS NOT NULL AND a.community >= 0
+        WITH a.community AS community, a
+        ORDER BY coalesce(a.degree, 0) DESC, a.name
+        WITH community, collect(a)[0..{int(per_cluster)}] AS picked
+        UNWIND picked AS a
+        RETURN a.key AS key, a.name AS name
+        ORDER BY community, coalesce(a.degree, 0) DESC
+        LIMIT $limit
+        """,
+        limit=limit,
+        database_=database,
+    ).records
+    return [dict(record) for record in records]
+
+
 def count_artists_needing_genres(
     driver: Driver,
     database: str,

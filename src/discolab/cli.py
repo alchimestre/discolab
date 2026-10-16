@@ -30,6 +30,10 @@ from .config import Settings, load_env_file
 from .enrich import DeezerEnricher, DeezerError
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
+from .map_view import Cluster
+from .map_view import layout as layout_clusters
+from .map_view import radius_for
+from .map_view import render_page
 from .graph import derive, load, query, store
 from .model import RawTrack
 from .providers import (
@@ -490,6 +494,12 @@ def enrich(
         help="Only enrich the top this share of candidates, ranked by how many "
         "seeds point at them. 1 is the P99.",
     ),
+    per_cluster: int = typer.Option(
+        0,
+        "--per-cluster",
+        help="Instead of a percentile, ask about the most connected artists of "
+        "every cluster, this many each. This is what names the clusters on the map.",
+    ),
     refresh: bool = typer.Option(
         False, "--refresh", help="Ask again about artists already done."
     ),
@@ -502,6 +512,23 @@ def enrich(
     if refresh:
         with store.connect(settings) as driver:
             store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
+
+    if per_cluster:
+        with store.connect(settings) as driver:
+            selected = len(
+                query.artists_by_cluster_centrality(
+                    driver, settings.neo4j_database, per_cluster, limit
+                )
+            )
+        typer.echo(
+            f"Asking about the most connected {per_cluster} artists of every cluster, "
+            f"{selected} of them."
+        )
+        _enrich_artists_with_deezer(
+            settings, limit, external_only, keep_going, min_agreement, workers, rate,
+            per_cluster,
+        )
+        return
 
     with store.connect(settings) as driver:
         pending = query.count_artists_needing_genres(
@@ -533,6 +560,7 @@ def _enrich_artists_with_deezer(
     min_agreement: int = 2,
     workers: int = 8,
     rate: float = 8.0,
+    by_cluster: int = 0,
 ) -> None:
     """Fill in genres and labels for artists nobody has asked about yet.
 
@@ -544,9 +572,14 @@ def _enrich_artists_with_deezer(
     asked = matched = missed = refused = 0
     while True:
         with store.connect(settings) as driver:
-            pending = query.artists_needing_genres(
-                driver, settings.neo4j_database, limit, external_only, min_agreement
-            )
+            if by_cluster:
+                pending = query.artists_by_cluster_centrality(
+                    driver, settings.neo4j_database, by_cluster, limit
+                )
+            else:
+                pending = query.artists_needing_genres(
+                    driver, settings.neo4j_database, limit, external_only, min_agreement
+                )
         if not pending:
             break
 
@@ -960,6 +993,141 @@ def check(
         typer.echo("stopped")
     finally:
         server.shutdown()
+
+
+@app.command("map")
+def map_page(
+    out: Path = typer.Option(Path("out/map.html"), "--out", help="Page to write."),
+    suggestions: int = typer.Option(
+        14, "--suggestions", help="Suggestions to carry per cluster."
+    ),
+    serve: bool = typer.Option(
+        True, "--serve/--no-serve", help="Serve the page."
+    ),
+) -> None:
+    """Draw the taste graph as a bubble map, suggestions scoped to a cluster."""
+    settings = _settings([])
+    with store.connect(settings) as driver:
+        database = settings.neo4j_database
+        sizes = driver.execute_query(
+            """
+            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
+            RETURN a.community AS key, count(*) AS size,
+                   sum(CASE WHEN coalesce(a.external, false) THEN 0 ELSE 1 END) AS corpus
+            """,
+            database_=database,
+        ).records
+        members = driver.execute_query(
+            """
+            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
+            UNWIND coalesce(a.styles, []) AS style
+            RETURN a.community AS key, style
+            """,
+            database_=database,
+        ).records
+        named = driver.execute_query(
+            """
+            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
+            RETURN a.community AS key, a.name AS name, coalesce(a.external, false) AS external,
+                   coalesce(a.degree, 0) AS degree
+            """,
+            database_=database,
+        ).records
+        links = driver.execute_query(
+            """
+            MATCH (a:Artist)-[r]->(b:Artist)
+            WHERE a.community IS NOT NULL AND b.community IS NOT NULL
+              AND a.community >= 0 AND b.community >= 0 AND a.community <> b.community
+            RETURN a.community AS a, b.community AS b,
+                   sum(CASE WHEN type(r) = 'CO_OCCURS' THEN 2 ELSE 1 END) AS weight
+            """,
+            database_=database,
+        ).records
+        candidates = driver.execute_query(
+            """
+            MATCH (seed:Artist)-[:SIMILAR_TO]->(ext:Artist)
+            WHERE seed.community IS NOT NULL AND seed.community >= 0
+              AND coalesce(ext.external, false)
+            WITH seed.community AS key, ext, count(DISTINCT seed) AS agreement,
+                 collect(DISTINCT seed.name)[0..3] AS via
+            WHERE agreement >= 2
+            RETURN key, ext.name AS name, agreement, via,
+                   coalesce(ext.styles, []) AS styles
+            """,
+            database_=database,
+        ).records
+
+    genres: dict[int, dict[str, int]] = {}
+    for row in members:
+        genres.setdefault(row["key"], {})
+        genres[row["key"]][row["style"]] = genres[row["key"]].get(row["style"], 0) + 1
+
+    own: dict[int, list[tuple[int, int, str]]] = {}
+    for row in named:
+        own.setdefault(row["key"], []).append(
+            (1 if row["external"] else 0, -row["degree"], row["name"])
+        )
+
+    found: dict[int, list[dict]] = {}
+    for row in candidates:
+        found.setdefault(row["key"], []).append(
+            {
+                "name": row["name"],
+                "agreement": row["agreement"],
+                "via": ", ".join(row["via"]),
+                "styles": list(row["styles"]),
+            }
+        )
+
+    clusters = [
+        Cluster(
+            key=row["key"],
+            size=row["size"],
+            corpus=row["corpus"],
+            genres=tuple(
+                sorted(
+                    genres.get(row["key"], {}).items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:3]
+            ),
+            tagged=sum(genres.get(row["key"], {}).values()),
+            artists=tuple(
+                name for _, _, name in sorted(own.get(row["key"], []))[:6]
+            ),
+            suggestions=sorted(
+                found.get(row["key"], []), key=lambda s: (-s["agreement"], s["name"])
+            )[:suggestions],
+        )
+        for row in sizes
+    ]
+    clusters.sort(key=lambda cluster: (-cluster.size, cluster.key))
+    biggest = max((cluster.size for cluster in clusters), default=1)
+    for cluster in clusters:
+        cluster.r = radius_for(cluster.size, biggest)
+
+    weights = [(row["a"], row["b"], row["weight"]) for row in links]
+    layout_clusters(clusters, weights)
+
+    page = render_page("Your taste, as clusters", clusters, weights)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
+    covered = sum(1 for cluster in clusters if cluster.genres)
+    typer.echo(
+        f"wrote {out} · {len(clusters)} clusters · "
+        f"{covered} of them have a genre recorded · "
+        f"{sum(len(c.suggestions) for c in clusters)} suggestions"
+    )
+
+    if serve:
+        url, _ = serve_directory(out.parent, out.name)
+        typer.echo(f"serving {url}")
+        typer.echo("ctrl-c to stop")
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            typer.echo("stopped")
+    else:
+        typer.echo(f"open file://{out.resolve()}")
 
 
 def _settings(roots: list[Path]) -> Settings:
