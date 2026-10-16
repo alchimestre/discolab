@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 import subprocess
 import threading
@@ -294,6 +295,8 @@ def _login_via_container(client: SpotifyClient, redirect: str) -> None:
     verifier = secrets.token_urlsafe(64)
     url = client.build_authorize_url(redirect, state, verifier)
 
+    parsed = urllib.parse.urlparse(redirect)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     command = [
         "docker", "compose", "--profile", "spotify", "run", "--rm",
         # compose run publishes nothing without this, so the browser could not
@@ -301,11 +304,17 @@ def _login_via_container(client: SpotifyClient, redirect: str) -> None:
         "--service-ports",
         "-e", f"SPOTIFY_STATE={state}",
         "-e", f"SPOTIFY_VERIFIER={verifier}",
+        "-e", f"SPOTIFY_CALLBACK_PORT={port}",
         "spotify-callback",
     ]
-    typer.echo("starting the callback container")
+    # Compose resolves the published port from its own environment rather than
+    # from -e, so the mapping has to be told here too or it stays on the default.
+    environment = dict(os.environ)
+    environment["SPOTIFY_CALLBACK_PORT"] = str(port)
+
+    typer.echo(f"starting the callback container, publishing port {port}")
     try:
-        process = subprocess.Popen(command)
+        process = subprocess.Popen(command, env=environment)
     except FileNotFoundError:
         typer.echo("docker is not on PATH", err=True)
         raise typer.Exit(code=2) from None
