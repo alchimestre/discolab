@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import math
 import os
 import secrets
 import subprocess
@@ -452,9 +453,13 @@ def expand(
 
     share = f"{linked / found:.0%}" if found else "n/a"
     fresh_count = sum(1 for row in fresh.values() if row["external"])
+    with store.connect(settings) as driver:
+        dropped = load.drop_single_seed_artists(driver, database)
+
     typer.echo(f"suggestions from {len(seed_rows)} seeds: {found}")
     typer.echo(f"links between your own artists: {linked} ({share})")
     typer.echo(f"new artists written: {fresh_count}")
+    typer.echo(f"dropped {dropped} that only one seed named, which cannot reach a page")
 
 
 @app.command()
@@ -479,20 +484,37 @@ def enrich(
         "--min-agreement",
         help="Only ask about artists this many seeds point at. 0 walks everything.",
     ),
+    top_percent: float = typer.Option(
+        1.0,
+        "--top-percent",
+        help="Only enrich the top this share of candidates, ranked by how many "
+        "seeds point at them. 1 is the P99.",
+    ),
     refresh: bool = typer.Option(
         False, "--refresh", help="Ask again about artists already done."
     ),
     limit: int = typer.Option(
-        8000, "--limit", help="Artists to ask about; the next run continues where this stops."
+        8000, "--limit", help="Absolute cap on artists asked about in one run."
     ),
 ) -> None:
-    """Fetch genres and labels for artists, paced below Deezer's request limit."""
+    """Fetch genres and labels for the candidates that can surface."""
     settings = _settings([])
     if refresh:
         with store.connect(settings) as driver:
             store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
+
+    with store.connect(settings) as driver:
+        pending = query.count_artists_needing_genres(
+            driver, settings.neo4j_database, external_only, min_agreement
+        )
+    share = max(top_percent, 0.01) / 100.0
+    wanted = min(limit, max(1, math.ceil(pending * share)))
+    typer.echo(
+        f"{pending} artists have no genres. Asking about the top {wanted}, which is "
+        f"the P{100 - share * 100:.2f} cut."
+    )
     _enrich_artists_with_deezer(
-        settings, limit, external_only, keep_going, min_agreement, workers, rate
+        settings, wanted, external_only, keep_going, min_agreement, workers, rate
     )
 
 

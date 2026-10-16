@@ -286,6 +286,31 @@ def artist_tempo(
     return {record["key"]: dict(record) for record in records}
 
 
+def _pending_genres_body(external_only: bool) -> str:
+    """Artists nobody has asked about, with how many seeds point at each."""
+    clause = "AND coalesce(a.external, false) = true" if external_only else ""
+    return f"""
+        MATCH (a:Artist)
+        WHERE coalesce(a.enriched, false) = false {clause}
+        WITH a, size([(seed:Artist)-[:SIMILAR_TO]->(a) | seed]) AS agreement
+    """
+
+
+def count_artists_needing_genres(
+    driver: Driver,
+    database: str,
+    external_only: bool = False,
+    min_agreement: int = 0,
+) -> int:
+    records = driver.execute_query(
+        _pending_genres_body(external_only)
+        + "WHERE agreement >= $min_agreement RETURN count(a) AS n",
+        min_agreement=min_agreement,
+        database_=database,
+    ).records
+    return records[0]["n"] if records else 0
+
+
 def artists_needing_genres(
     driver: Driver,
     database: str,
@@ -293,20 +318,15 @@ def artists_needing_genres(
     external_only: bool = False,
     min_agreement: int = 2,
 ) -> list[dict]:
-    """Artists Discogs has not been asked about, the ones that can surface first.
+    """Artists nobody has asked about, most agreed on first.
 
-    Defaults to artists two or more seeds agree on, because those are the only
-    ones that can reach a page. The 2,410 single-seed tail is forty minutes at
-    sixty requests a minute and cannot change any output.
-
-    `min_agreement=0` walks everything, for the rare case where that is wanted.
+    Ordered by agreement because that is what decides whether an artist can reach
+    a page, so a caller that only asks about the first N is asking about the
+    candidates that matter rather than an arbitrary slice.
     """
-    clause = "AND coalesce(a.external, false) = true" if external_only else ""
     records = driver.execute_query(
-        f"""
-        MATCH (a:Artist)
-        WHERE coalesce(a.enriched, false) = false {clause}
-        WITH a, size([(seed:Artist)-[:SIMILAR_TO]->(a) | seed]) AS agreement
+        _pending_genres_body(external_only)
+        + """
         WHERE agreement >= $min_agreement
         ORDER BY agreement DESC, a.name
         LIMIT $limit
