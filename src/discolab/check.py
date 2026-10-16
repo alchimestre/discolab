@@ -404,6 +404,7 @@ def build_page(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
+<link rel="icon" href="data:,">
 <style>
   :root {{ color-scheme: light dark; }}
   body {{ font: 15px/1.5 system-ui, sans-serif; max-width: 1080px; margin: 0 auto; padding: 24px; }}
@@ -537,6 +538,16 @@ def build_page(
   // The player API reports error 101 or 150 when an uploader disabled embedding.
   // Most artists have several official uploads, so move to the next one rather
   // than sending the listener elsewhere; only give up when none of them play.
+  // The player API handshakes back to this page's origin, and the port is not
+  // known until the page is served, so the origin goes on the embeds here
+  // rather than in the markup. Without it the API posts to the wrong window and
+  // the 101 and 150 errors that move to the next upload never arrive.
+  document.querySelectorAll('iframe.yt').forEach(function (frame) {{
+    const url = new URL(frame.src);
+    url.searchParams.set('origin', location.origin);
+    frame.src = url.toString();
+  }});
+
   window.onYouTubeIframeAPIReady = function () {{
     document.querySelectorAll('iframe.yt').forEach(function (frame) {{
       const section = frame.closest('section');
@@ -545,6 +556,7 @@ def build_page(
       let attempts = 0;
       let player;
       player = new YT.Player(frame, {{
+        playerVars: {{ origin: location.origin }},
         events: {{
           onError: function () {{
             attempts += 1;
@@ -788,6 +800,7 @@ def build_cluster_index(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
+<link rel="icon" href="data:,">
 <style>
   :root {{ color-scheme: light dark; }}
   body {{ font: 15px/1.5 system-ui, sans-serif; max-width: 1080px; margin: 0 auto; padding: 24px; }}

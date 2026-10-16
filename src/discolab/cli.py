@@ -942,8 +942,11 @@ def check(
 
     if not serve:
         typer.echo(f"open file://{path.resolve()}")
-        if youtube:
-            typer.echo("note: file:// pages cannot play the embeds, use --serve", err=True)
+        # Not gated on youtube: cached resolutions still render as embeds, so a
+        # page built with --no-youtube can carry them and fail the same way.
+        typer.echo(
+            "note: file:// pages cannot play the embeds, use --serve", err=True
+        )
         return
 
     url, server = serve_directory(path.parent, path.name, votes_path=votes)
