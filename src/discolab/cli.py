@@ -303,8 +303,19 @@ def expand(
 
     expander = LastfmSimilarExpander(settings.lastfm_api_key, per_seed)
     wanted = {tag.strip().casefold() for tag in genre.split(",") if tag.strip()}
+
+    typer.echo(f"tagging {len(seed_rows)} seeds")
+    tag_rows = []
+    for position, seed in enumerate(seed_rows, start=1):
+        seed["tags"] = sorted({tag.casefold() for tag in expander.tags(seed["name"])})
+        tag_rows.append({"key": seed["key"], "tags": seed["tags"]})
+        if position % 25 == 0:
+            typer.echo(f"  tagged {position}/{len(seed_rows)}", err=True)
+    with store.connect(settings) as driver:
+        load.write_seed_tags(driver, settings.neo4j_database, tag_rows)
+
     if wanted:
-        seed_rows = _filter_seeds_by_genre(expander, seed_rows, wanted)
+        seed_rows = [seed for seed in seed_rows if wanted & set(seed["tags"])]
         typer.echo(f"seeds tagged {', '.join(sorted(wanted))}: {len(seed_rows)}")
         if not seed_rows:
             typer.echo("no seed carried any of those tags", err=True)
@@ -347,20 +358,6 @@ def expand(
     typer.echo(f"suggestions from {len(seed_rows)} seeds: {found}")
     typer.echo(f"already in the corpus: {already} ({share})")
     typer.echo(f"new artists written: {written}")
-
-
-def _filter_seeds_by_genre(
-    expander: LastfmSimilarExpander, seed_rows: list[dict], wanted: set[str]
-) -> list[dict]:
-    """Keep the seeds Last.fm tags with one of the wanted genres."""
-    kept: list[dict] = []
-    for position, seed in enumerate(seed_rows, start=1):
-        tags = {tag.casefold() for tag in expander.tags(seed["name"])}
-        if tags & wanted:
-            kept.append(seed)
-        if position % 50 == 0:
-            typer.echo(f"  tagged {position}/{len(seed_rows)}", err=True)
-    return kept
 
 
 def _explain_empty(driver, database: str) -> None:
@@ -495,6 +492,12 @@ def check(
         "--min-areas",
         help="Require this many separate taste areas to agree. 2 is the useful setting.",
     ),
+    genre: str = typer.Option(
+        "",
+        "--genre",
+        help="Only count agreement from seeds tagged with one of these, comma separated. "
+        "Applies to the ranking, not just to which seeds were expanded from.",
+    ),
     serve: bool = typer.Option(
         True,
         "--serve/--no-serve",
@@ -509,7 +512,12 @@ def check(
     with store.connect(settings) as driver:
         database = settings.neo4j_database
         if source == "external":
-            rows = query.external_candidates(driver, database, limit, min_areas)
+            wanted = tuple(
+                tag.strip().casefold() for tag in genre.split(",") if tag.strip()
+            )
+            rows = query.external_candidates(
+                driver, database, limit, min_areas, wanted
+            )
         else:
             rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
         if not rows:

@@ -170,10 +170,12 @@ Ranking artists that bridge the graph only returns artists you already have, bec
 
 ```
 uv run discolab expand --per-cluster 3
-uv run discolab expand --per-cluster 3 --genre "electronic,techno,house,psytrance"
+uv run discolab check --source external --genre "electronic,techno,house,psytrance"
 ```
 
-`--per-cluster` takes the top artists of every cluster rather than the loudest artists overall, so the seeds spread across the whole taste instead of concentrating in the largest island. `--genre` reads each seed's Last.fm tags and drops the seeds that carry none of the listed ones, which is how to point the whole pipeline at one kind of music.
+`--per-cluster` takes the top artists of every cluster rather than the loudest artists overall, so the seeds spread across the whole taste instead of concentrating in the largest island.
+
+Expansion stores each seed's Last.fm tags on the seed, and `check --genre` counts agreement only from seeds carrying one of the listed tags. Filtering at expansion time is not enough on its own: the graph keeps every earlier run, so a seed expanded before the filter existed still counts. That is the difference between a filter on what gets fetched and a filter on what gets shown.
 
 Then build the page from those artists rather than from your own:
 

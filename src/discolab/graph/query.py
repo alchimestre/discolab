@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from neo4j import Driver
 
 
@@ -122,19 +124,28 @@ def artist_keys(driver: Driver, database: str) -> list[str]:
 
 
 def external_candidates(
-    driver: Driver, database: str, limit: int = 25, min_areas: int = 0
+    driver: Driver,
+    database: str,
+    limit: int = 25,
+    min_areas: int = 0,
+    tags: Sequence[str] = (),
 ) -> list[dict]:
     """Artists from outside the corpus, ranked by how many seeds agree on them.
 
     One seed suggesting an artist says almost nothing, which is the bulk of a
     similarity list. Several seeds agreeing says more, and seeds sitting in
-    different communities of the graph agreeing says most: unrelated parts of
-    the taste pointing at the same name is the signal worth listening to.
+    different communities of the graph agreeing says most.
+
+    When tags are given, only seeds carrying one of them count towards the
+    agreement. Filtering the seeds at expansion time is not enough: the graph
+    keeps every earlier run, so a non-electronic seed expanded months ago would
+    still outvote the ones being asked for.
     """
     records = driver.execute_query(
         """
         MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
         WHERE coalesce(e.external, false) = true
+          AND ($tags = [] OR any(t IN coalesce(s.tags, []) WHERE t IN $tags))
         WITH e,
              count(DISTINCT s) AS seed_count,
              count(DISTINCT s.community) AS areas,
@@ -147,6 +158,7 @@ def external_candidates(
         ORDER BY seed_count DESC, areas DESC, mean_score DESC
         LIMIT $limit
         """,
+        tags=list(tags),
         min_areas=min_areas,
         limit=limit,
         database_=database,

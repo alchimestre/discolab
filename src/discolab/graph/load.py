@@ -48,6 +48,22 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
+def write_seed_tags(driver: Driver, database: str, rows: list[dict]) -> None:
+    """Store each seed's Last.fm tags, so candidates can be filtered by genre later."""
+    if not rows:
+        return
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (a:Artist {key: row.key})
+            SET a.tags = row.tags
+            """,
+            rows=chunk,
+            database_=database,
+        )
+
+
 def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
     """Create suggested artists, marked external, and the edge from their seed."""
     if not rows:
