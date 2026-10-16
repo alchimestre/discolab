@@ -85,6 +85,7 @@ class Candidate:
     bridge_score: float
     videos: tuple[Video, ...]
     tracks: tuple[dict, ...]
+    owned_titles: tuple[str, ...] = ()
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -134,8 +135,10 @@ def resolve_artist(
             if rank is None or not is_track(video):
                 continue
             title_key = normalise(video.title)
-            holds = 0 if any(key in title_key for key in owned_keys) else 1
-            found[video.video_id] = (rank, holds, order, video)
+            # A track the library already holds proves nothing when the point is
+            # to test whether the graph surfaces something new, so it ranks last.
+            fresh = 1 if any(key in title_key for key in owned_keys) else 0
+            found[video.video_id] = (rank, fresh, order, video)
 
     ranked = sorted(found.values(), key=lambda item: (item[0], item[1], item[2]))
     # An artist with their own channel or distributor channel does not need
@@ -261,11 +264,35 @@ def _renderer_title(renderer: dict) -> str:
     return title.get("simpleText", "")
 
 
+def holds_track(candidate: Candidate, video: Video) -> bool:
+    """True when the library already holds the track this video plays."""
+    title_key = normalise(video.title)
+    return any(
+        key and key in title_key for key in (normalise(t) for t in candidate.owned_titles)
+    )
+
+
+def ordered_videos(candidate: Candidate) -> list[Video]:
+    """Fresh tracks first.
+
+    Ordered here rather than at search time so that a cached resolution still
+    puts something new in front of the listener.
+    """
+    fresh = [v for v in candidate.videos if not holds_track(candidate, v)]
+    held = [v for v in candidate.videos if holds_track(candidate, v)]
+    return fresh + held
+
+
 def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist") -> str:
     sections = "\n".join(
         _section(index, candidate) for index, candidate in enumerate(candidates, start=1)
     )
     with_embed = sum(1 for candidate in candidates if candidate.videos)
+    already_held = sum(
+        1
+        for candidate in candidates
+        if candidate.videos and holds_track(candidate, ordered_videos(candidate)[0])
+    )
     return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -282,6 +309,9 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
   iframe {{ width: 100%; max-width: 560px; aspect-ratio: 16/9; border: 0; margin-top: 8px; }}
   .links a {{ font-size: 13px; margin-right: 10px; }}
   .video-title {{ font-size: 13px; opacity: .7; margin: 4px 0 0; }}
+  .tag {{ display: inline-block; font-size: 11px; padding: 0 5px; border-radius: 8px;
+         border: 1px solid currentColor; opacity: .8; }}
+  .tag.already-held {{ color: var(--warn, #b45309); }}
   .keep {{ margin-top: 10px; display: inline-block; font-size: 14px; }}
   .alts {{ list-style: none; padding-left: 0; }}
   .alts a {{ font-size: 12px; }}
@@ -294,8 +324,9 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
 </style>
 <div id="bar">
   Kept <span id="count">0 of {len(candidates)}</span>.
-  <span id="playable">{with_embed} embeds</span>.
-  Criterion: fewer than 3 kept means the query is wrong, the data is too thin, or blank space is not fertile.
+  <span id="blocked">no embeds blocked</span>.
+  {already_held} of {with_embed} embeds are tracks you already hold, matched by title, so ticking those tests recognition rather than discovery.
+  Criterion: fewer than 3 new tracks kept means the query is wrong, the data is too thin, or blank space is not fertile.
 </div>
 <h1>{html.escape(title)}</h1>
 <p>One embed per artist, plus alternative official uploads and links to the other catalogues. Tick the ones worth playing again. Only tracks from the artist's own, distributor or verified channel are embedded. If an uploader blocked embedding the page moves to the next official upload, and only falls back to a link when none of them play.</p>
@@ -303,7 +334,7 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
 <script>
   const boxes = [...document.querySelectorAll('input.keep')];
   const label = document.getElementById('count');
-  const playable = document.getElementById('playable');
+  const blocked = document.getElementById('blocked');
   let dead = 0;
 
   function update() {{
@@ -311,7 +342,9 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
     label.textContent = kept.length + ' of ' + boxes.length;
     boxes.forEach(b => b.closest('section').classList.toggle('dead',
       boxes.some(o => o.checked) && !b.checked));
-    playable.textContent = (boxes.length) + ' candidates, ' + dead + ' blocked by the uploader';
+    blocked.textContent = dead
+      ? dead + ' of ' + boxes.length + ' blocked by the uploader'
+      : 'no embeds blocked';
   }}
   boxes.forEach(b => b.addEventListener('change', update));
 
@@ -332,9 +365,15 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
     update();
   }}
 
-  function setLabel(section, text) {{
-    const line = section.querySelector('.video-title');
-    if (line && text) line.textContent = text;
+  function setLabel(section, video) {{
+    if (!video) return;
+    const line = section.querySelector('.video-title .playing');
+    if (line) line.textContent = video.label;
+    const tag = section.querySelector('.video-title .tag');
+    if (tag) {{
+      tag.textContent = video.held ? 'already held' : 'new';
+      tag.className = 'tag ' + (video.held ? 'already-held' : 'new');
+    }}
   }}
 
   // The player API reports error 101 or 150 when an uploader disabled embedding.
@@ -355,7 +394,7 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
             index += 1;
             if (index < videos.length) {{
               player.loadVideoById(videos[index].id);
-              setLabel(section, videos[index].label);
+              setLabel(section, videos[index]);
             }} else {{
               markDead(section);
             }}
@@ -375,7 +414,11 @@ def build_page(candidates: Sequence[Candidate], title: str = "discolab checklist
 
 def _section(index: int, candidate: Candidate) -> str:
     query = urllib.parse.quote(candidate.name)
-    playlist = [{"id": v.video_id, "label": v.label} for v in candidate.videos]
+    videos = ordered_videos(candidate)
+    playlist = [
+        {"id": v.video_id, "label": v.label, "held": holds_track(candidate, v)}
+        for v in videos
+    ]
     data_videos = html.escape(json.dumps(playlist, ensure_ascii=False), quote=True)
     parts = [
         f'<section data-videos="{data_videos}">',
@@ -391,8 +434,10 @@ def _section(index: int, candidate: Candidate) -> str:
         "</p>",
     ]
 
-    primary = candidate.videos[0] if candidate.videos else None
+    primary = videos[0] if videos else None
     if primary is not None:
+        held = holds_track(candidate, primary)
+        tag = "already held" if held else "new"
         parts.append(
             f'<div class="player"><iframe class="yt" src="{primary.embed_url}" '
             'loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; '
@@ -405,13 +450,16 @@ def _section(index: int, candidate: Candidate) -> str:
             "<p class=\"fallback-note\">This uploader blocks embedding.</p>"
             "</div>"
         )
-        parts.append(f'<p class="video-title">{html.escape(primary.label)}</p>')
+        parts.append(
+            f'<p class="video-title"><span class="tag {tag.replace(" ", "-")}">{tag}</span> '
+            f'<span class="playing">{html.escape(primary.label)}</span></p>'
+        )
     else:
         parts.append(
             '<p class="video-title">nothing resolved, use the YouTube search link above</p>'
         )
 
-    alternatives = candidate.videos[1:]
+    alternatives = videos[1:]
     if alternatives:
         items = "".join(
             f'<li><a href="{video.watch_url}">{html.escape(video.label)}</a></li>'

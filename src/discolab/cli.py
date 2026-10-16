@@ -208,7 +208,7 @@ def check(
             _explain_empty(driver, database)
             raise typer.Exit(code=0)
         owned = query.owned_tracks_for(
-            driver, database, [row["key"] for row in rows], tracks
+            driver, database, [row["key"] for row in rows], max(tracks, 40)
         )
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
@@ -234,7 +234,8 @@ def check(
             degree=row["degree"],
             bridge_score=row["bridge_score"],
             videos=tuple(videos.get(row["name"], ())),
-            tracks=tuple(owned.get(row["key"], [])),
+            tracks=tuple(owned.get(row["key"], [])[:tracks]),
+            owned_titles=tuple(track["title"] for track in owned.get(row["key"], [])),
         )
         for row in rows
     ]

@@ -51,7 +51,11 @@ Each section embeds one official track. Candidates are found by searching the ar
 | A verified channel only when the title opens with the artist's name, and only when the artist has no channel of their own | Verified businesses re-upload anything |
 | Many uploads per artist, ranked by channel trust then by whether the library holds the track | Uploaders can block embedding, so the page needs somewhere to go next |
 
-The page listens for the YouTube player's error event and loads the next candidate, so an upload that blocks embedding is replaced rather than becoming a dead frame. Only when every candidate is blocked does it fall back to a thumbnail and a link. The header reports how many fell through.
+Each embed is tagged `new` or `already held`, matched by title against the tracks in the library. The tag updates if the page moves to another upload.
+
+The header reports how many embeds are tracks you already hold. Ticking those tests recognition rather than discovery, so they do not count towards the criterion.
+
+The page listens for the YouTube player's error event and loads the next candidate, so an upload that blocks embedding is replaced rather than becoming a dead frame. Only when every candidate is blocked does it fall back to a thumbnail and a link. It records how many it tried, which distinguishes an artist who blocks embedding channel-wide from a retry loop that failed.
 
 An artist with no official upload gets no embed rather than a re-upload. `Humanoids` on the sample library is one.
 
