@@ -380,14 +380,12 @@ def ordered_videos(candidate: Candidate, keys: Sequence[str] = ()) -> list[Video
 def build_page(
     candidates: Sequence[Candidate],
     library_titles: Sequence[str] = (),
-    votes: dict[str, dict] | None = None,
     title: str = "discolab checklist",
     nav: str = "",
 ) -> str:
     keys = library_keys(library_titles)
-    saved = votes or {}
     sections = "\n".join(
-        _section(index, candidate, keys, saved.get(candidate.name, {}))
+        _section(index, candidate, keys)
         for index, candidate in enumerate(candidates, start=1)
     )
     with_embed = sum(1 for candidate in candidates if candidate.videos)
@@ -417,7 +415,6 @@ def build_page(
              align-items: start; padding: 16px 0;
              border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }}
   .media {{ position: sticky; top: 64px; }}
-  .media .keep {{ margin-top: 8px; }}
   iframe {{ width: 100%; aspect-ratio: 16/9; border: 0; border-radius: 4px; }}
   @media (max-width: 760px) {{
     section {{ grid-template-columns: 1fr; }}
@@ -429,7 +426,6 @@ def build_page(
          border: 1px solid currentColor; opacity: .8; }}
   .tag.already-held {{ color: var(--warn, #b45309); }}
   .tag.played {{ opacity: .6; }}
-  .keep {{ margin-top: 10px; display: inline-block; font-size: 14px; }}
   .alts {{ list-style: none; padding-left: 0; }}
   .alts a {{ font-size: 12px; }}
   .fallback img {{ width: 100%; max-width: 320px; border-radius: 4px; display: block; }}
@@ -440,72 +436,27 @@ def build_page(
   .dead h2 {{ opacity: .6; }}
 </style>
 <div id="bar">
-  Kept <span id="count">0 of {len(candidates)}</span>.
   <span id="blocked">no embeds blocked</span>.
-  {already_held} of {with_embed} embeds are tracks you already hold, matched by title, so ticking those tests recognition rather than discovery.
-  Criterion: fewer than 3 new tracks kept means the query is wrong, the data is too thin, or blank space is not fertile.
+  {already_held} of {with_embed} embeds are tracks you already hold, matched by title.
 </div>
 <h1>{html.escape(title)}</h1>
 {nav}
-<p>One embed per artist, plus alternative official uploads and links to the other catalogues. Tick the ones worth playing again. Only tracks from the artist's own, distributor or verified channel are embedded. If an uploader blocked embedding the page moves to the next official upload, and only falls back to a link when none of them play.</p>
+<p>One embed per artist, plus alternative official uploads and links to the other catalogues. Only tracks from the artist's own, distributor or verified channel are embedded. If an uploader blocked embedding the page moves to the next official upload, and only falls back to a link when none of them play.</p>
 {sections}
 <script>
-  const boxes = [...document.querySelectorAll('input.keep')];
-  const label = document.getElementById('count');
   const blocked = document.getElementById('blocked');
   let dead = 0;
 
-  function sectionName(section) {{
-    const heading = section.querySelector('h2').textContent.trim();
-    return heading.replace(/^\\d+\\.\\s*/, '').split(' island')[0].trim();
-  }}
-
-  function save() {{
-    const data = {{}};
-    document.querySelectorAll('section').forEach(function (s) {{
-      const tag = s.querySelector('.tag');
-      data[sectionName(s)] = {{
-        kept: s.querySelector('input.keep').checked,
-        state: tag ? tag.textContent : '',
-      }};
-    }});
-    fetch('/votes', {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify(data),
-    }}).catch(function () {{}});
-  }}
-
-  // Ticks live on the server, so a reload or a rebuild brings them back.
-  function restore() {{
-    fetch('/votes').then(function (r) {{ return r.ok ? r.json() : {{}}; }})
-      .then(function (data) {{
-        document.querySelectorAll('section').forEach(function (s) {{
-          const saved = data[sectionName(s)];
-          if (saved) s.querySelector('input.keep').checked = !!saved.kept;
-        }});
-        render();
-      }}).catch(function () {{}});
-  }}
-
   function render() {{
-    const kept = boxes.filter(b => b.checked);
-    label.textContent = kept.length + ' of ' + boxes.length;
-    boxes.forEach(b => b.closest('section').classList.toggle('dead',
-      boxes.some(o => o.checked) && !b.checked));
     blocked.textContent = dead
-      ? dead + ' of ' + boxes.length + ' blocked by the uploader'
+      ? dead + ' of {len(candidates)} blocked by the uploader'
       : 'no embeds blocked';
   }}
 
   function update() {{
     render();
-    save();
   }}
-  boxes.forEach(b => b.addEventListener('change', update));
-  // Render only, so loading the page does not overwrite saved ticks with blanks.
   render();
-  restore();
 
   function markDead(section) {{
     const player = section.querySelector('.player');
@@ -612,7 +563,7 @@ def _provenance(candidate: Candidate) -> str:
 
 
 def _section(
-    index: int, candidate: Candidate, keys: Sequence[str], vote: dict
+    index: int, candidate: Candidate, keys: Sequence[str]
 ) -> str:
     query = urllib.parse.quote(candidate.name)
     videos = ordered_videos(candidate, keys)
@@ -676,10 +627,6 @@ def _section(
         media.append(
             '<p class="video-title">nothing resolved, use the YouTube link on the left</p>'
         )
-    checked = " checked" if vote.get("kept") else ""
-    media.append(
-        f'<label class="keep"><input type="checkbox" class="keep"{checked}> keep</label>'
-    )
     media.append("</div>")
 
     return "\n".join(
@@ -730,49 +677,9 @@ def write_page(content: str, path: Path) -> Path:
     return path
 
 
-class _VoteHandler(http.server.SimpleHTTPRequestHandler):
+class _PageHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:
         pass
-
-    def do_GET(self) -> None:
-        votes_path = getattr(self.server, "votes_path", None)
-        if self.path.rstrip("/") == "/votes" and votes_path is not None:
-            body = json.dumps(read_votes(votes_path), ensure_ascii=False).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        super().do_GET()
-
-    def do_POST(self) -> None:
-        votes_path = getattr(self.server, "votes_path", None)
-        if self.path.rstrip("/") != "/votes" or votes_path is None:
-            self.send_error(404)
-            return
-        length = int(self.headers.get("Content-Length") or 0)
-        try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            self.send_error(400)
-            return
-        votes_path.parent.mkdir(parents=True, exist_ok=True)
-        votes_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-        self.send_response(204)
-        self.end_headers()
-
-
-def read_votes(path: Path) -> dict[str, dict]:
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def build_cluster_index(
@@ -824,7 +731,6 @@ leads to, or open its periphery to see the members that barely connect to it.</p
 def serve_directory(
     directory: Path,
     filename: str,
-    votes_path: Path | None = None,
     host: str = "127.0.0.1",
 ) -> tuple[str, http.server.ThreadingHTTPServer]:
     """Serve the page over http, not file.
@@ -833,8 +739,7 @@ def serve_directory(
     request carries no referrer.
     """
     server = http.server.ThreadingHTTPServer(
-        (host, 0), functools.partial(_VoteHandler, directory=str(directory))
+        (host, 0), functools.partial(_PageHandler, directory=str(directory))
     )
-    server.votes_path = votes_path
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return f"http://{host}:{server.server_port}/{filename}", server

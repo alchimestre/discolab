@@ -44,7 +44,7 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 | `discolab expand` | Ask Last.fm for artists similar to each cluster centre |
 | `discolab check` | Write one listening page, scoped by cluster or by source |
 | `discolab clusters --pages` | One index page and one frontier page per cluster |
-| `discolab votes` | Summarise the ticks and read the criterion |
+| `discolab map` | Draw the graph as a bubble map, suggestions scoped to a cluster |
 | `discolab stats` | Node, edge and island counts |
 | `discolab prune` | Drop unplayed tracks and the artists left with none |
 | `discolab reset --yes` | Delete every node and relationship |
@@ -72,9 +72,25 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 
 `--no-rekordbox` skips the step.
 
+## Looking at the shape of it
+
+`discolab map` draws the graph as bubbles and scopes suggestions to one of them.
+
+| Element | Meaning |
+|---|---|
+| A bubble | One cluster, sized by how many artists it holds, placed so clusters that share artists settle near each other |
+| Its label | The cluster's genre, but only when one genre covers half its tagged artists. Otherwise it says `mixed` |
+| Hovering | Dims everything else, keeps that cluster's links lit, and names it in the toolbar |
+| Clicking | Scopes the right-hand list to that cluster, and clicking again releases it |
+| The list | Artists that cluster's members point at, most agreed on first, with how many pointed at them and which |
+
+A cluster is named only when the name is true. The largest holds 2,325 artists across 42 genres, its top one covering 27% of its tagged artists, so it says `mixed` rather than claiming to be Electro.
+
+`enrich --per-cluster N` fills in the genres the map needs. Ranking by agreement cannot name a cluster: the artists that define one are the ones it is built around, not the ones most seeds point at.
+
 ## Checking the candidates
 
-`discolab check` writes one HTML page, one section per artist, with links to Spotify, YouTube, Bandcamp, Discogs and MusicBrainz. Tick the ones worth playing again and the header counts them.
+`discolab check` writes one HTML page, one section per artist, with links to Spotify, YouTube, Bandcamp, Discogs and MusicBrainz.
 
 Each section embeds one official track. Candidates are found by searching the artist name, then the titles of tracks the library already holds, which is what turns a thin and repetitive pool into the actual uploads.
 
@@ -87,23 +103,11 @@ Each section embeds one official track. Candidates are found by searching the ar
 
 Each embed is tagged `new` or `already held`, matched by title against the tracks in the library. The tag updates if the page moves to another upload.
 
-The header reports how many embeds are tracks you already hold. Ticking those tests recognition rather than discovery, so they do not count towards the criterion.
+The header reports how many embeds are tracks you already hold, since those test recognition rather than discovery.
 
 The page listens for the YouTube player's error event and loads the next candidate, so an upload that blocks embedding is replaced rather than becoming a dead frame. Only when every candidate is blocked does it fall back to a thumbnail and a link. It records how many it tried, which distinguishes an artist who blocks embedding channel-wide from a retry loop that failed.
 
 An artist with no official upload gets no embed rather than a re-upload. `Humanoids` on the sample library is one.
-
-The kill criterion is on that page, and the ticks are written to `out/votes.json` as they are made, so closing the tab loses nothing and the boxes come back ticked on the next build. `discolab votes` prints the reading:
-
-```
-$ uv run discolab votes
-kept 6 of 25 candidates
-  new tracks: 3
-  already known: 3
-criterion not met: fewer than 3 new tracks kept
-```
-
-Only ticks on tracks you do not already hold count towards the criterion, so `discolab votes` separates them.
 
 The page is written to `out/`, which is not committed, and it lists local file paths.
 

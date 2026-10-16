@@ -20,7 +20,6 @@ from .check import (
     build_cluster_index,
     build_page,
     load_video_cache,
-    read_votes,
     resolve_artist,
     save_video_cache,
     serve_directory,
@@ -291,33 +290,6 @@ def stats(island_count: int = typer.Option(8, "--islands", help="Islands to list
 
 
 @app.command()
-def votes(
-    path: Path = typer.Option(Path("out/votes.json"), "--path", help="Where the ticks are saved."),
-) -> None:
-    """Summarise the ticks from the listening page, and read the criterion."""
-    saved = read_votes(path)
-    if not saved:
-        typer.echo(f"no ticks recorded at {path} yet")
-        raise typer.Exit(code=0)
-
-    kept = {name: vote for name, vote in saved.items() if vote.get("kept")}
-    fresh = [name for name, vote in kept.items() if vote.get("state", "").startswith("new")]
-    held = [
-        name
-        for name, vote in kept.items()
-        if vote.get("state", "").startswith(("already", "played"))
-    ]
-    typer.echo(f"kept {len(kept)} of {len(saved)} candidates")
-    typer.echo(f"  new tracks: {len(fresh)}")
-    typer.echo(f"  already known: {len(held)}")
-    typer.echo(
-        "criterion met" if len(fresh) >= 3 else "criterion not met: fewer than 3 new tracks kept"
-    )
-    for name in sorted(kept):
-        typer.echo(f"    {kept[name].get('state', '?'):14} {name}")
-
-
-@app.command()
 def reset(yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt.")) -> None:
     """Delete every node and relationship in the database."""
     settings = _settings([])
@@ -370,7 +342,6 @@ def guess(
         youtube=youtube,
         cache=Path("out/videos.json"),
         refresh=False,
-        votes=Path("out/votes.json"),
         source="external",
         min_areas=3,
         cluster=-1,
@@ -677,7 +648,6 @@ def clusters(
             keys = [c["key"] for c in candidates]
             sources = query.artist_sources(driver, database, keys)
             tempo = query.artist_tempo(driver, database, keys)
-            votes = read_votes(out / "votes.json")
             nav = f'<p><a href="index.html">all clusters</a> · cluster {cluster}</p>'
             page = build_page(
                 [
@@ -705,7 +675,6 @@ def clusters(
                     for c in candidates
                 ],
                 titles,
-                votes,
                 title=f"cluster {cluster} frontier",
                 nav=nav,
             )
@@ -866,9 +835,6 @@ def check(
     refresh: bool = typer.Option(
         False, "--refresh", help="Ignore the cache and search again."
     ),
-    votes: Path = typer.Option(
-        Path("out/votes.json"), "--votes", help="Where the ticks are saved."
-    ),
     source: str = typer.Option(
         "bridge",
         "--source",
@@ -970,7 +936,7 @@ def check(
         )
         for row in rows
     ]
-    path = write_page(build_page(candidates, titles, read_votes(votes)), out)
+    path = write_page(build_page(candidates, titles), out)
     typer.echo(f"wrote {path}")
 
     if not serve:
@@ -982,7 +948,7 @@ def check(
         )
         return
 
-    url, server = serve_directory(path.parent, path.name, votes_path=votes)
+    url, server = serve_directory(path.parent, path.name)
     typer.echo(f"serving {url}")
     typer.echo("ctrl-c to stop")
     if open_browser:
