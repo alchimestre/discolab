@@ -26,14 +26,7 @@ from .check import (
     write_page,
 )
 from .config import Settings, load_env_file
-from .enrich import (
-    DEFAULT_DB,
-    MUSICBRAINZ_INTERVAL,
-    DeezerEnricher,
-    MusicBrainzEnricher,
-    RekordboxEnricher,
-    join_key,
-)
+from .enrich import DeezerEnricher
 from .expand import LastfmSimilarExpander
 from .graph import derive, load, query, store
 from .model import RawTrack
@@ -57,21 +50,23 @@ def ingest(
         False, "--recreate", help="Delete existing graph data before loading."
     ),
     lastfm: bool = typer.Option(
-        False, "--lastfm", help="Also read scrobbles, which add play counts and listening sessions."
+        True, "--lastfm/--no-lastfm", help="Read scrobbles. On unless switched off."
     ),
     spotify: bool = typer.Option(
-        False, "--spotify", help="Also read Spotify playlists and liked songs."
+        True,
+        "--spotify/--no-spotify",
+        help="Read playlists and liked songs. On unless switched off.",
     ),
     scrobbles: int = typer.Option(
-        20000, "--scrobbles", help="How much scrobble history to read."
+        20000, "--scrobbles", help="Cap on scrobble history read."
     ),
     months: int = typer.Option(
-        0,
+        24,
         "--months",
-        help="Only read the last N months of scrobbles, 0 for all history. Tastes move.",
+        help="Only the last N months of scrobbles, 0 for all history. Tastes move.",
     ),
 ) -> None:
-    """Read the configured providers and load observed nodes and edges into Neo4j."""
+    """Read every configured source, then normalise it into the graph."""
     settings = _settings(root)
     raw: list[RawTrack] = []
     unparsed: list[tuple[str, str]] = []
@@ -88,10 +83,11 @@ def ingest(
         typer.echo("no library roots: pass --root or set DISCOLAB_LIBRARY_ROOTS", err=True)
         raise typer.Exit(code=2)
 
+    if lastfm and not (settings.lastfm_api_key and settings.lastfm_username):
+        typer.echo("last.fm: skipped, set LASTFM_API_KEY and LASTFM_USERNAME", err=True)
+        lastfm = False
+
     if lastfm:
-        if not settings.lastfm_api_key or not settings.lastfm_username:
-            typer.echo("set LASTFM_API_KEY and LASTFM_USERNAME in .env", err=True)
-            raise typer.Exit(code=2)
         typer.echo(f"last.fm: reading up to {scrobbles} scrobbles, this takes a few minutes...")
         since = None
         if months > 0:
@@ -110,14 +106,17 @@ def ingest(
 
     if spotify:
         if not settings.spotify_client_id or not settings.spotify_client_secret:
-            typer.echo("set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env", err=True)
-            raise typer.Exit(code=2)
-        client = SpotifyClient(
-            settings.spotify_client_id, settings.spotify_client_secret, TOKEN_PATH
-        )
-        if not client.has_login:
-            typer.echo("not logged in: run `discolab spotify-login` first", err=True)
-            raise typer.Exit(code=2)
+            typer.echo("spotify: skipped, set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET", err=True)
+            spotify = False
+        else:
+            client = SpotifyClient(
+                settings.spotify_client_id, settings.spotify_client_secret, TOKEN_PATH
+            )
+            if not client.has_login:
+                typer.echo("spotify: skipped, run `discolab spotify-login` first", err=True)
+                spotify = False
+
+    if spotify:
         typer.echo("spotify: reading playlists and liked songs...")
         try:
             spotify_scan = SpotifyProvider(client).scan()
@@ -270,16 +269,55 @@ def reset(yes: bool = typer.Option(False, "--yes", help="Skip the confirmation p
 
 
 @app.command()
-def run(
-    root: list[Path] = typer.Option(None, "--root", help="Library root, repeatable."),
-    limit: int = typer.Option(20, "--limit"),
-    min_degree: int = typer.Option(2, "--min-degree"),
-    lastfm: bool = typer.Option(False, "--lastfm", help="Also read scrobbles."),
+def guess(
+    per_cluster: int = typer.Option(
+        40, "--per-cluster", help="Most central members to take from each taste cluster."
+    ),
+    per_seed: int = typer.Option(
+        100, "--per-seed", help="Similar artists to ask for per seed."
+    ),
+    isolated: int = typer.Option(
+        400,
+        "--isolated",
+        help="Also seed from this many artists nothing else can reach, best known first.",
+    ),
+    limit: int = typer.Option(25, "--limit", help="Candidates on the page."),
+    out: Path = typer.Option(Path("out/checklist.html"), "--out", help="Page to write."),
+    youtube: bool = typer.Option(
+        True, "--youtube/--no-youtube", help="Resolve one embed per candidate."
+    ),
+    serve: bool = typer.Option(
+        True, "--serve/--no-serve", help="Serve the page, which the embeds require."
+    ),
 ) -> None:
-    """Ingest, derive, and print candidates in one pass."""
-    ingest(root=root, recreate=True, lastfm=lastfm, scrobbles=20000)
+    """Derive taste communities, expand past them, write the listening page."""
     derive_edges(resolution=1.0, min_artists=2, max_artists=80)
-    candidates(limit=limit, min_degree=min_degree, min_bridge=0.0, tracks=True)
+    expand(
+        per_cluster=per_cluster,
+        per_seed=per_seed,
+        min_degree=1,
+        isolated=isolated,
+        min_score=0.0,
+    )
+    # Similarity edges change who sits next to whom, so communities are
+    # computed again before anything is ranked.
+    derive_edges(resolution=1.0, min_artists=2, max_artists=80)
+    check(
+        limit=limit,
+        min_degree=2,
+        tracks=6,
+        out=out,
+        youtube=youtube,
+        cache=Path("out/videos.json"),
+        refresh=False,
+        votes=Path("out/votes.json"),
+        source="external",
+        min_areas=0,
+        cluster=-1,
+        periphery=False,
+        serve=serve,
+        open_browser=serve,
+    )
 
 
 @app.command()
@@ -360,59 +398,35 @@ def expand(
 
 @app.command()
 def enrich(
-    rekordbox: Path = typer.Option(
-        DEFAULT_DB, "--rekordbox", help="Path to the rekordbox master.db."
-    ),
-    skip_rekordbox: bool = typer.Option(
-        False, "--skip-rekordbox", help="Leave the rekordbox step alone."
-    ),
-    musicbrainz: bool = typer.Option(
-        False,
-        "--musicbrainz",
-        help="Identify artists against MusicBrainz. One request a second, and it resumes.",
-    ),
-    deezer: bool = typer.Option(
-        False,
-        "--deezer",
-        help="Fetch genres and labels from Deezer. Fast, and it resumes.",
-    ),
     external_only: bool = typer.Option(
         False, "--external-only", help="Limit the pass to artists from expansion."
     ),
     workers: int = typer.Option(
-        8, "--workers", help="Parallel requests. Deezer measured 300 in 3.7 seconds."
+        10, "--workers", help="Parallel requests. Deezer measured 300 in 3.7 seconds."
     ),
     keep_going: bool = typer.Option(
         False, "--keep-going", help="Repeat until every artist has been asked about."
     ),
     min_agreement: int = typer.Option(
-        2,
+        0,
         "--min-agreement",
-        help="Only ask about artists this many seeds point at. 0 walks the whole tail.",
+        help="Only ask about artists this many seeds point at. 0 walks everything.",
     ),
     refresh: bool = typer.Option(
-        False, "--refresh", help="Ask again about artists already done. Fixes stored noise."
+        False, "--refresh", help="Ask again about artists already done."
     ),
     limit: int = typer.Option(
-        200, "--limit", help="Artists to identify in this run; the next run continues."
+        8000, "--limit", help="Artists to ask about; the next run continues where this stops."
     ),
 ) -> None:
-    """Enrich tracks and artists from curated sources."""
+    """Fetch genres and labels for artists, concurrently."""
     settings = _settings([])
-
-    if not skip_rekordbox:
-        _enrich_from_rekordbox(settings, rekordbox)
-
-    if musicbrainz:
-        _identify_with_musicbrainz(settings, limit)
-
-    if deezer:
-        if refresh:
-            with store.connect(settings) as driver:
-                store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
-        _enrich_artists_with_deezer(
-            settings, limit, external_only, keep_going, min_agreement, workers
-        )
+    if refresh:
+        with store.connect(settings) as driver:
+            store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
+    _enrich_artists_with_deezer(
+        settings, limit, external_only, keep_going, min_agreement, workers
+    )
 
 
 def _enrich_artists_with_deezer(
@@ -471,92 +485,6 @@ def _enrich_artists_with_deezer(
     typer.echo(f"Deezer asked about {asked}, answered for {answered}")
 
 
-def _enrich_from_rekordbox(settings: Settings, rekordbox: Path) -> None:
-    enricher = RekordboxEnricher(rekordbox)
-    reason = enricher.unavailable_reason()
-    if reason:
-        typer.echo(reason, err=True)
-        raise typer.Exit(code=2)
-
-    typer.echo("reading rekordbox")
-    facts = enricher.facts()
-    typer.echo(
-        f"  {len(facts)} rows, {sum(1 for f in facts.values() if f.bpm)} with a BPM, "
-        f"{sum(1 for f in facts.values() if f.tags)} carrying tags"
-    )
-
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        pairs = query.track_paths(driver, database)
-        rows: list[dict] = []
-        seen: set[str] = set()
-        for pair in pairs:
-            sheet = facts.get(join_key(pair["path"]))
-            if sheet is None or pair["key"] in seen:
-                continue
-            seen.add(pair["key"])
-            rows.append(
-                {
-                    "key": pair["key"],
-                    "bpm": sheet.bpm,
-                    "musical_key": sheet.musical_key,
-                    "rating": sheet.rating,
-                    "dj_plays": sheet.dj_plays,
-                    "tags": list(sheet.tags),
-                }
-            )
-        load.write_track_facts(driver, database, rows)
-    typer.echo(f"enriched {len(rows)} tracks from {len(pairs)} paths")
-
-
-def _identify_with_musicbrainz(settings: Settings, limit: int) -> None:
-    enricher = MusicBrainzEnricher()
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        pending = query.artists_to_identify(driver, database, limit)
-    if not pending:
-        typer.echo("every artist with tracks has been identified already")
-    else:
-        typer.echo(f"identifying {len(pending)} artists, one request a second")
-        rows = []
-        found = 0
-        for position, artist in enumerate(pending, start=1):
-            facts = enricher.lookup(artist["name"])
-            time.sleep(MUSICBRAINZ_INTERVAL)
-            if facts is None:
-                rows.append(
-                    {"key": artist["key"], "mbid": None, "mb_type": None,
-                     "mb_country": None, "tags": []}
-                )
-                continue
-            found += 1
-            rows.append(
-                {
-                    "key": artist["key"],
-                    "mbid": facts.mbid,
-                    "mb_type": facts.kind,
-                    "mb_country": facts.country,
-                    "tags": list(facts.tags),
-                }
-            )
-            if position % 25 == 0:
-                typer.echo(f"  identified {position}/{len(pending)}", err=True)
-        with store.connect(settings) as driver:
-            load.write_artist_identity(driver, settings.neo4j_database, rows)
-            duplicates = query.duplicate_identities(driver, settings.neo4j_database)
-        typer.echo(f"identified {found} of {len(pending)} artists")
-
-    if duplicates:
-        total = sum(len(entry["nodes"]) for entry in duplicates)
-        typer.echo(
-            f"{len(duplicates)} identities span {total} artist nodes, which is "
-            f"{total - len(duplicates)} duplicates to merge"
-        )
-        for entry in duplicates[:8]:
-            names = ", ".join(node["name"] for node in entry["nodes"])
-            typer.echo(f"  {names[:78]}")
-
-
 @app.command()
 def clusters(
     limit: int = typer.Option(40, "--limit", help="Clusters to list."),
@@ -601,7 +529,6 @@ def clusters(
                         time.sleep(0.4)
             keys = [c["key"] for c in candidates]
             sources = query.artist_sources(driver, database, keys)
-            tempo = query.artist_tempo(driver, database, keys)
             votes = read_votes(out / "votes.json")
             nav = f'<p><a href="index.html">all clusters</a> · cluster {cluster}</p>'
             page = build_page(
@@ -623,9 +550,6 @@ def clusters(
                         areas=1,
                         styles=tuple(sources.get(c["key"], {}).get("styles", ())),
                         labels=tuple(sources.get(c["key"], {}).get("labels", ())),
-                        bpm_low=tempo.get(c["key"], {}).get("low"),
-                        bpm_high=tempo.get(c["key"], {}).get("high"),
-                        musical_keys=tuple(tempo.get(c["key"], {}).get("musical_keys") or ()),
                     )
                     for c in candidates
                 ],
@@ -851,7 +775,6 @@ def check(
         )
         titles = query.library_titles(driver, database)
         sources = query.artist_sources(driver, database, keys)
-        tempo = query.artist_tempo(driver, database, keys)
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
@@ -887,9 +810,6 @@ def check(
             areas=row.get("areas", 0),
             styles=tuple(sources.get(row["key"], {}).get("styles", ())),
             labels=tuple(sources.get(row["key"], {}).get("labels", ())),
-            bpm_low=tempo.get(row["key"], {}).get("low"),
-            bpm_high=tempo.get(row["key"], {}).get("high"),
-            musical_keys=tuple(tempo.get(row["key"], {}).get("musical_keys") or ()),
         )
         for row in rows
     ]

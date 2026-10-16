@@ -258,26 +258,6 @@ def cluster_periphery(
     return [dict(record) for record in records]
 
 
-def artist_tempo(
-    driver: Driver, database: str, keys: Sequence[str]
-) -> dict[str, dict]:
-    """Tempo range and keys per artist, from the tracks the library holds."""
-    records = driver.execute_query(
-        """
-        UNWIND $keys AS key
-        MATCH (a:Artist {key: key})<-[:BY]-(t:Track)
-        WHERE t.bpm IS NOT NULL
-        WITH key, count(t) AS tracks, min(t.bpm) AS low, max(t.bpm) AS high,
-             avg(t.bpm) AS mean,
-             [k IN collect(DISTINCT t.musical_key) WHERE k IS NOT NULL][0..4] AS musical_keys
-        RETURN key, tracks, low, high, mean, musical_keys
-        """,
-        keys=list(keys),
-        database_=database,
-    ).records
-    return {record["key"]: dict(record) for record in records}
-
-
 def artists_needing_genres(
     driver: Driver,
     database: str,
@@ -306,48 +286,6 @@ def artists_needing_genres(
         """,
         min_agreement=min_agreement,
         limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
-
-
-def artists_to_identify(driver: Driver, database: str, limit: int) -> list[dict]:
-    """Corpus artists MusicBrainz has not been asked about yet, busiest first."""
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist)
-        WHERE coalesce(a.external, false) = false AND coalesce(a.mb_checked, false) = false
-        OPTIONAL MATCH (t:Track)-[:BY]->(a)
-        WITH a, count(t) AS tracks
-        WHERE tracks > 0
-        RETURN a.key AS key, a.name AS name, tracks
-        ORDER BY tracks DESC, a.name
-        LIMIT $limit
-        """,
-        limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
-
-
-def duplicate_identities(driver: Driver, database: str) -> list[dict]:
-    """Artist keys that MusicBrainz says are the same artist."""
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist) WHERE a.mbid IS NOT NULL
-        WITH a.mbid AS mbid, collect({key: a.key, name: a.name}) AS nodes
-        WHERE size(nodes) > 1
-        RETURN mbid, nodes
-        ORDER BY size(nodes) DESC
-        """,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
-
-
-def track_paths(driver: Driver, database: str) -> list[dict]:
-    records = driver.execute_query(
-        "MATCH (t:Track) UNWIND t.paths AS p RETURN t.key AS key, p AS path",
         database_=database,
     ).records
     return [dict(record) for record in records]

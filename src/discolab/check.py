@@ -96,9 +96,6 @@ class Candidate:
     areas: int = 0
     styles: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
-    bpm_low: float | None = None
-    bpm_high: float | None = None
-    musical_keys: tuple[str, ...] = ()
 
 
 def search_videos(query: str, timeout: float = SEARCH_TIMEOUT) -> list[Video]:
@@ -592,10 +589,6 @@ def _provenance(candidate: Candidate) -> str:
         header += f" · {html.escape(', '.join(candidate.styles[:4]))}"
     if candidate.labels:
         header += f" · on {html.escape(', '.join(candidate.labels[:2]))}"
-    if candidate.bpm_low is not None and candidate.bpm_high is not None:
-        header += f" · {candidate.bpm_low:.0f}-{candidate.bpm_high:.0f} bpm"
-    if candidate.musical_keys:
-        header += f" · {' '.join(html.escape(k) for k in candidate.musical_keys[:4])}"
     return header
 
 

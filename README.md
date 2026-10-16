@@ -1,8 +1,8 @@
 # discolab
 
-Builds a taste graph from local music metadata, then ranks the artists that sit between otherwise separate parts of it.
+Builds a taste graph from what you listen to, then ranks the artists that sit between otherwise separate parts of it.
 
-Reads audio files from disk. No network access, no account, no external service.
+Three sources are aggregated into one graph: the audio files on disk, Last.fm scrobbles, and Spotify playlists and liked songs. Deezer then adds genres and labels.
 
 ## Requirements
 
@@ -14,33 +14,40 @@ Reads audio files from disk. No network access, no account, no external service.
 1. `uv sync`
 2. `cp .env.example .env`, then set `DISCOLAB_LIBRARY_ROOTS` to your music folders separated by `:`
 3. `docker compose up -d`
-4. `uv run discolab run --root ~/Music/Tracks`
-5. `uv run discolab check`
+4. `uv run discolab spotify-login`, once, if you want Spotify in the graph
+5. `uv run discolab ingest`
 
 Neo4j Browser is at `http://localhost:7474`.
 
-## Commands
+## The loop
+
+| Step | Command | What it does |
+|---|---|---|
+| 1 | `discolab ingest` | Aggregate every configured source, resolve the names, load the graph |
+| 2 | `discolab enrich` | Genres and labels from Deezer |
+| 3 | `discolab guess` | Derive taste communities, expand past them, write the page |
+
+```
+uv run discolab ingest
+uv run discolab enrich
+uv run discolab guess
+```
+
+Every source is read unless it is switched off or unconfigured, so `ingest` needs no flags. `--no-lastfm` and `--no-spotify` skip one. A source missing its credentials is reported and skipped rather than stopping the run.
+
+The three steps are not optional and not ordered by taste: `guess` reads communities that `ingest` produced, and `expand` inside it needs Last.fm.
 
 | Command | Does |
 |---|---|
-| `discolab ingest --root PATH [--root PATH] [--recreate] [--lastfm] [--scrobbles N]` | Read providers, resolve entities, load observed nodes and edges |
-| `discolab derive [--resolution F] [--min-artists N] [--max-artists N]` | Build artist edges, communities, islands, bridge scores |
-| `discolab candidates [--limit N] [--min-degree N] [--min-bridge F] [--no-tracks]` | Rank bridging artists with the tracks you own |
-| `discolab spotify-login [--container]` | Authorise against Spotify once, caching the refresh token |
-| `discolab enrich [--rekordbox PATH] [--deezer] [--min-agreement N] [--workers N]` | Attach curated metadata: BPM and key from rekordbox, genres and labels from Deezer |
-| `discolab expand [--per-cluster N] [--per-seed N] [--isolated N]` | Expand from cluster centres to artists you do not have |
-| `discolab check [--source bridge\|external] [--min-areas N] [--limit N] [--tracks N] [--out PATH] [--youtube/--no-youtube] [--cache PATH] [--refresh]` | Write a local listening page |
-| `discolab votes [--path PATH]` | Summarise the ticks and read the criterion |
-| `discolab stats [--islands N]` | Node, edge and island counts |
+| `discolab derive` | Rebuild artist edges, communities and islands on their own |
+| `discolab expand` | Ask Last.fm for artists similar to each cluster centre |
+| `discolab check` | Write one listening page, scoped by cluster or by source |
+| `discolab clusters --pages` | One index page and one frontier page per cluster |
+| `discolab votes` | Summarise the ticks and read the criterion |
+| `discolab stats` | Node, edge and island counts |
+| `discolab prune` | Drop unplayed tracks and the artists left with none |
 | `discolab reset --yes` | Delete every node and relationship |
-| `discolab run --root PATH` | Ingest, derive, then candidates |
-
-```
-uv run discolab run --root "$HOME/Music/Tracks"
-uv run discolab candidates --limit 30 --min-degree 1
-uv run discolab check --limit 25 --out out/checklist.html
-uv run discolab stats --islands 15
-```
+| `discolab spotify-login` | Authorise against Spotify once, caching the refresh token |
 
 ## Checking the candidates
 
@@ -88,9 +95,9 @@ Resolving the embeds is the only step that touches the network, and `--no-youtub
 | `NEO4J_USER` | `neo4j` | |
 | `NEO4J_PASSWORD` | `discolab-dev` | Change this outside local development |
 | `NEO4J_DATABASE` | `neo4j` | |
-| `LASTFM_API_KEY` | none | Enables `--lastfm`. The key alone is enough; the shared secret is not used |
+| `LASTFM_API_KEY` | none | Skips Last.fm when unset. The key alone is enough; the shared secret is not used |
 | `LASTFM_USERNAME` | none | The account whose scrobbles to read |
-| `SPOTIFY_CLIENT_ID` | none | Enables `--spotify` |
+| `SPOTIFY_CLIENT_ID` | none | Skips Spotify when unset |
 | `SPOTIFY_CLIENT_SECRET` | none | |
 | `SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8888/callback` | Must match the app's registered URI exactly |
 | `SPOTIFY_CALLBACK_PORT` | `8888` | Must match the port in the redirect URI, since the container publishes it |
@@ -126,7 +133,7 @@ Filenames are read as `Artist - Title`. Credits are parsed from that text.
 
 ## What Last.fm adds
 
-`--lastfm` reads scrobble history and gives two things the files cannot.
+Last.fm scrobbles give two things the files cannot.
 
 Play counts, from `user.gettoptracks`, written to `Track.plays`. That is the first real play signal in the graph, so unplayed becomes definable.
 
@@ -136,7 +143,7 @@ Reading more history reads more sessions: `--scrobbles N` sets how many recent s
 
 ## What Spotify adds
 
-`--spotify` reads every playlist plus liked songs and takes two things from them.
+Spotify contributes every playlist plus liked songs, and two things come from them.
 
 Playlist membership becomes a container, so artists sharing a playlist co-occur. Liked songs is one large container, and it is capped like any other, so it only contributes when it is small enough to mean something.
 
@@ -194,33 +201,10 @@ One seed suggesting an artist says almost nothing, and that is most of a similar
 
 Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the page.
 
-## Enriching the nodes
+## Enriching
 
 ```
-brew install sqlcipher
 uv run discolab enrich
-```
-
-Rekordbox holds the BPM, the musical key and the DJ's own tags for every file, and that is the highest signal metadata available here: it is the owner's classification of their own records rather than a service's guess.
-
-Rekordbox 6 encrypts `master.db` with SQLCipher, so reading it needs the `sqlcipher` binary. Every row is local and the key is a published constant.
-
-| Written | From |
-|---|---|
-| `Track.bpm` | `djmdContent.BPM`, stored as a hundredth so 12700 is 127.00 |
-| `Track.musical_key` | `djmdContent.KeyID` through `djmdKey.ScaleName` |
-| `Track.rating`, `Track.dj_plays` | `djmdContent.Rating`, `DJPlayCount` |
-| `Tag` nodes, `(Track)-[:TAGGED]->(Tag)` | `djmdMyTag` through `djmdSongMyTag` |
-| `(Artist)-[:TAGGED {tracks}]->(Tag)` | the union of its tracks, weighted by count |
-
-The join is on the file path, and it must be normalised to NFC first: the filesystem returns decomposed accents and rekordbox composed ones, which made an otherwise exact join match nothing. Measured against the sample library, 1,820 of 1,821 paths match, all 1,820 carry a BPM and a key, and 878 artists end up with tags.
-
-The tags are a curated taxonomy spanning style and region, so they filter far more sharply than Last.fm's. `Raw / Deep / Hypnotic`, `Peak Time / Driving`, `Minimal / Deep Tech`, `Hard Techno`, `Progressive Psy-Trance`, `Maghreb & Mashriq`, `Tuareg Desert Blues`, `Occitan & French Folk`. With BPM and key alongside them, a mix-oriented query is a filter rather than a guess.
-
-### Deezer
-
-```
-uv run discolab enrich --deezer --min-agreement 0 --limit 6000 --workers 10
 ```
 
 Deezer supplies genres and label names, written as properties rather than as graph nodes.
@@ -241,7 +225,7 @@ Genres are coarser than Discogs styles — `Electro`, `Techno/House`, `Dance` ra
 
 **Labels are a property, not a graph.** Affinity through labels measured at zero: 1,770 distinct labels across 406 artists, not one holding two of the same collection's artists. A collection of one release per small label cannot express signing affinity. The label name stays as one string on the page because it is the only curated human context there: `Ostgut Ton` says what Shed sounds like faster than any score.
 
-`enrich` defaults to `--min-agreement 2`, asking only about artists two or more seeds agree on, because those are the only ones that can reach a page. `--min-agreement 0` walks everything.
+`enrich` walks the whole graph by default. `--min-agreement 2` restricts it to the artists two or more seeds agree on, which is the only subset that can reach a page.
 
 ## Known limits
 
