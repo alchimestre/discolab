@@ -287,7 +287,7 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
     hits: list[str] = []
     for cluster in clusters:
         family = cluster.family
-        title = f"{cluster.family} · {cluster.size:,} artists"
+        title = f"{cluster.size:,} artists"
         heat.append(
             f'<circle class="heat" data-key="{cluster.key}" '
             f'cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" '
@@ -328,7 +328,6 @@ def _payload(clusters: list[Cluster], candidates: list[dict]) -> str:
                     "size": cluster.size,
                     "corpus": cluster.corpus,
                     "tagged": cluster.tagged,
-                    "family": cluster.family,
                     "colour": cluster.colour,
                     "sub_genre": cluster.sub_genre,
                     "genres": [{"name": name, "n": n} for name, n in cluster.genres],
@@ -383,10 +382,8 @@ PAGE = """<!doctype html>
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
   aside { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 40px; }
-  #legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 14px;
-            font-size: 11px; color: var(--quiet); }
-  #legend span { display: inline-flex; align-items: center; gap: 4px; }
-  #legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+         flex: none; }
   #scope h2 { font-size: 17px; margin: 0 0 2px; }
   #scope .meta { font-size: 12px; color: var(--quiet); margin-bottom: 10px; }
   #scope .genres { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
@@ -397,17 +394,17 @@ PAGE = """<!doctype html>
   #scope .picked { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
   #scope .picked button { font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer;
                           border-radius: 9px; border: 1px solid var(--line);
-                          background: transparent; color: var(--ink); }
+                          background: transparent; color: var(--ink);
+                          display: inline-flex; align-items: center; gap: 6px; }
   p.aside { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
             color: var(--quiet); margin: 14px 0 6px; }
   #scope .partners { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 6px; }
   #scope .partners button { font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer;
                             border-radius: 9px; border: 1px dashed var(--line);
-                            background: transparent; color: var(--ink); }
+                            background: transparent; color: var(--ink);
+                            display: inline-flex; align-items: center; gap: 6px; }
   #scope .partners button:hover { border-style: solid; }
-  #scope .partners b { color: var(--quiet); font-weight: 500; }
   ol.suggestions { list-style: none; margin: 0; padding: 0; }
-  ol.suggestions .from { color: var(--quiet); }
   .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
           margin: 0 0 14px; background: color-mix(in srgb, CanvasText 4%, transparent); }
   .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
@@ -437,10 +434,9 @@ PAGE = """<!doctype html>
 </div>
 
 <aside>
-  <div id="legend"></div>
   <div id="scope">
-    <h2>Pick a cluster</h2>
-    <p class="meta">Bubbles are groups of artists that occur together. Size is how many artists the group holds. Click several to combine them.</p>
+    <h2>Pick a region</h2>
+    <p class="meta">Regions are groups of artists that occur together. Size is how many artists the group holds. Click several to combine them.</p>
     <p class="empty">Nothing selected yet.</p>
   </div>
 </aside>
@@ -479,22 +475,6 @@ document.getElementById('stat').textContent =
 function esc(s) { return String(s).replace(/[&<>"]/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-function colourOf(family) {
-  const hit = DATA.clusters.find(c => c.family === family);
-  return hit ? hit.colour : '#8a8f98';
-}
-
-// Colour is the genre family, so the legend is the map's key: two bubbles in the
-// same colour hold the same broad kind of music, wherever they sit.
-(function buildLegend() {
-  const counts = new Map();
-  for (const c of DATA.clusters) counts.set(c.family, (counts.get(c.family) || 0) + 1);
-  document.getElementById('legend').innerHTML = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([family, n]) => '<span><i style="background:' + colourOf(family) + '"></i>' +
-      esc(family) + ' ' + n + '</span>').join('');
-})();
-
 function emphasise() {
   const only = picked.size === 1 ? [...picked][0] : null;
   const partners = only === null ? null : (neighbours.get(only) || new Map());
@@ -525,7 +505,6 @@ function selectedCandidates() {
         name: c.name,
         styles: c.styles,
         hits: Object.keys(c.clusters).map(Number),
-        from: [],
         pointers: Object.values(c.clusters).reduce((a, b) => a + b, 0),
       }))
       .sort((a, b) => b.hits.length - a.hits.length || b.pointers - a.pointers)
@@ -545,7 +524,6 @@ function selectedCandidates() {
       name: candidate.name,
       styles: candidate.styles,
       hits: hits,
-      from: hits.map(key => (byKey.get(key) || {}).family || String(key)),
       pointers: pointers,
     });
   }
@@ -588,10 +566,10 @@ function renderPanel() {
       ? c.genres.slice(0, 5).map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('') +
         '<span>' + c.tagged + ' of ' + c.size.toLocaleString() + ' tagged</span>'
       : '<span>no genres recorded yet</span>';
-    head = '<h2 style="color:' + c.colour + '">' + esc(c.family) + '</h2>' +
-      '<p class="meta">' + c.size.toLocaleString() + ' artists · ' +
-      c.corpus.toLocaleString() + ' of them yours · cluster ' + c.key + ' · ' +
-      esc(c.family) + '</p>' +
+    head = '<h2 style="color:' + c.colour + '">' +
+      c.size.toLocaleString() + ' artists</h2>' +
+      '<p class="meta">' + c.corpus.toLocaleString() + ' of them yours · ' +
+      c.tagged.toLocaleString() + ' tagged</p>' +
       (c.sub_genre ? '<p class="own-tag">Your own tag for it: <strong>' +
         esc(c.sub_genre) + '</strong></p>' : '') +
       '<div class="genres">' + genres + '</div>';
@@ -603,7 +581,8 @@ function renderPanel() {
       yours.toLocaleString() + ' of them yours</p>';
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
-    esc(c.family) + ' ×</button>').join('');
+    '<span class="dot" style="background:' + c.colour + '"></span>' +
+    c.size.toLocaleString() + ' ×</button>').join('');
   // With one cluster on, name the clusters that would answer. Choosing blind is
   // how you land on one of the five hundred and seventy-four pairs that share
   // nothing and read it as a broken page.
@@ -614,22 +593,21 @@ function renderPanel() {
       .slice(0, 12);
     partners = linked.length
       ? '<p class="aside">Shares candidates with</p><div class="partners">' +
-        linked.map(([key, n]) => '<button data-add="' + key + '">' +
-          esc((byKey.get(key) || {}).family || key) + ' <b>' + n + '</b></button>').join('') +
+        linked.map(([key, n]) => {
+          const c = byKey.get(key) || {};
+          return '<button data-add="' + key + '">' +
+            '<span class="dot" style="background:' + (c.colour || '#8a8f98') + '"></span>' +
+            (c.size || 0).toLocaleString() + '</button>';
+        }).join('') +
         '</div>'
       : '<p class="aside">Shares no candidates with any other cluster.</p>';
   }
   const rows = selectedCandidates();
   const suggest = s => {
     const tags = (s.styles || []).slice(0, 3).map(esc).join(' · ');
-    let where;
-    if (!s.from.length) {
-      where = ' across ' + s.hits.length + ' of your clusters';
-    } else if (s.from.length > 1) {
-      where = ' across ' + s.from.length + ' of the selections: ' + s.from.map(esc).join(', ');
-    } else {
-      where = ' from ' + esc(s.from[0]);
-    }
+    const where = s.hits.length > 1
+      ? ' across ' + s.hits.length + ' of your regions'
+      : ' from one region';
     return '<li><div class="name">' + esc(s.name) + '</div>' +
       '<div class="why">' + s.pointers + ' pointing artists' + where +
       '</div>' + (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
@@ -676,7 +654,7 @@ for (const hit of hits) {
   // on a pick made every other cluster unreadable.
   hit.addEventListener('mouseenter', () => {
     const c = byKey.get(key);
-    tip.textContent = c.family + ' · ' + c.size.toLocaleString() + ' artists';
+    tip.textContent = c.size.toLocaleString() + ' artists';
   });
   hit.addEventListener('focus', () => hit.dispatchEvent(new Event('mouseenter')));
   hit.addEventListener('mouseleave', () => { tip.textContent = ''; });
