@@ -119,7 +119,6 @@ class Cluster:
     genres: tuple[tuple[str, int], ...] = ()
     tags: tuple[tuple[str, int], ...] = ()
     labels: tuple[tuple[str, int], ...] = ()
-    artists: tuple[str, ...] = ()
     x: float = 0.0
     y: float = 0.0
     r: float = 0.0
@@ -253,63 +252,12 @@ def layout(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> None:
             break
 
 
-# How far a cluster's glow reaches past its own radius, and how many of its
-# artists the map can name at full zoom.
+# How far a cluster's glow reaches past its own radius.
 HALO = 1.9
-ARTIST_LABELS = 24
-GOLDEN = math.pi * (3 - math.sqrt(5))
 
 
 def _colour(family: str) -> str:
     return FAMILY_COLOUR.get(family, FAMILY_COLOUR["Other"])
-
-
-def _spread_order(count: int) -> list[int]:
-    """An ordering whose every prefix is spread over the ring.
-
-    Names arrive a tier at a time, so the first four have to cover the disc as
-    well as the first twenty-four do. Reversing the bits of each index does that
-    without a packing pass.
-    """
-    bits = max(1, (count - 1).bit_length())
-
-    def reversed_bits(index: int) -> int:
-        out = 0
-        for _ in range(bits):
-            out = (out << 1) | (index & 1)
-            index >>= 1
-        return out
-
-    return sorted(range(count), key=reversed_bits)
-
-
-def _artist_marks(cluster: Cluster) -> list[dict]:
-    """Where each named artist of a cluster sits, and how strongly it ranks.
-
-    A spiral inside the hot core spreads them without a packing pass, and the
-    golden angle keeps neighbours from lining up as more of them appear. The rank
-    is the position in an order whose prefixes stay spread, so raising the tier
-    fills the disc rather than deepening its middle.
-    """
-    names = cluster.artists[:ARTIST_LABELS]
-    if not names:
-        return []
-    span = max(1, len(names) - 1)
-    marks = []
-    for index, name in enumerate(names):
-        radius = cluster.r * (0.28 + 0.64 * (index / span))
-        angle = index * GOLDEN
-        marks.append(
-            {
-                "name": name,
-                "rank": 0,
-                "x": cluster.x + math.cos(angle) * radius,
-                "y": cluster.y + math.sin(angle) * radius,
-            }
-        )
-    for rank, position in enumerate(_spread_order(len(marks))):
-        marks[position]["rank"] = rank
-    return marks
 
 
 def _heatmap_svg(clusters: list[Cluster]) -> str:
@@ -336,7 +284,6 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
     )
 
     heat: list[str] = []
-    marks: list[str] = []
     hits: list[str] = []
     for cluster in clusters:
         family = cluster.family
@@ -352,14 +299,6 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
             f'cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" r="{cluster.r:.1f}">'
             f"<title>{html.escape(title)}</title></circle>"
         )
-        for mark in _artist_marks(cluster):
-            marks.append(
-                f'<text class="artist" data-key="{cluster.key}" '
-                f'data-rank="{mark["rank"]}" data-r="{cluster.r:.1f}" '
-                f'x="{mark["x"]:.1f}" y="{mark["y"]:.1f}" '
-                f'text-anchor="middle" dominant-baseline="central">'
-                f"{html.escape(mark['name'])}</text>"
-            )
 
     # The viewBox has to hold the halos, not the cores, or the heat is cut off at
     # the edge of the pane.
@@ -375,7 +314,6 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
         f'preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">'
         f"<defs>{defs}</defs>"
         f'<g id="heat">{"".join(heat)}</g>'
-        f'<g id="artists">{"".join(marks)}</g>'
         f'<g id="hits">{"".join(hits)}</g>'
         f"</svg>"
     )
@@ -395,7 +333,6 @@ def _payload(clusters: list[Cluster], candidates: list[dict]) -> str:
                     "sub_genre": cluster.sub_genre,
                     "genres": [{"name": name, "n": n} for name, n in cluster.genres],
                     "labels": [{"name": name, "n": n} for name, n in cluster.labels],
-                    "artists": list(cluster.artists),
                 }
                 for cluster in clusters
             ],
@@ -443,9 +380,6 @@ PAGE = """<!doctype html>
   .hit:focus { outline: none; }
   .hit:focus-visible { fill: none; stroke: currentColor; stroke-width: 2;
                        vector-effect: non-scaling-stroke; }
-  .artist { fill: var(--ink); opacity: .92; pointer-events: none; display: none;
-            font-size: var(--artist-label, 10px);
-            paint-order: stroke; stroke: Canvas; stroke-width: .2em; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
   aside { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 40px; }
@@ -499,7 +433,7 @@ PAGE = """<!doctype html>
     <span class="stat" id="tip"></span>
   </div>
   <div id="graph">__SVG__</div>
-  <p id="hint">Hover to inspect. Click a region to scope the suggestions. Zoom for names.</p>
+  <p id="hint">Hover to inspect. Click a region to scope the suggestions.</p>
 </div>
 
 <aside>
@@ -534,7 +468,6 @@ for (const candidate of DATA.candidates) {
 }
 const heats = [...document.querySelectorAll('.heat')];
 const hits = [...document.querySelectorAll('.hit')];
-const artists = [...document.querySelectorAll('.artist')];
 const scope = document.getElementById('scope');
 const tip = document.getElementById('tip');
 const picked = new Set();
@@ -769,30 +702,6 @@ function applyView() {
   const w = home.w / zoom;
   svg.setAttribute('viewBox',
     (home.x - offset.x) + ' ' + (home.y - offset.y) + ' ' + w + ' ' + (home.h / zoom));
-  // Labels are drawn in graph units, so they grow with the zoom. Scaling the
-  // font the other way keeps them the same size on screen at any depth.
-  const unitsPerPixel = w / Math.max(1, svg.clientWidth);
-  svg.style.setProperty('--artist-label', (11 * unitsPerPixel).toFixed(2) + 'px');
-}
-
-// No names at rest: the map reads as density until the zoom can carry text. Each
-// tier adds the next band of an artist's rank, so leaning in fills the region
-// rather than swapping one set of names for another.
-const ARTIST_TIERS = [[2.2, 4], [4, 8], [8, 16], [14, 24]];
-// A name needs room around it, so a cluster shows no more than its disc can hold
-// at this depth. Without it the small regions keep the full tier and the text
-// stacks on itself while the large ones have space to spare.
-const NAME_PITCH = 26;
-function revealArtists() {
-  let limit = 0;
-  for (const [at, count] of ARTIST_TIERS) if (zoom >= at) limit = count;
-  const parts = svg.getAttribute('viewBox').trim().split(/[ ,]+/).map(Number);
-  const scale = svg.clientWidth / Math.max(1, parts[2]);
-  for (const mark of artists) {
-    const room = Number(mark.dataset.r) * scale;
-    const fit = Math.min(limit, Math.floor(room / NAME_PITCH));
-    mark.style.display = Number(mark.dataset.rank) < fit ? 'inline' : 'none';
-  }
 }
 
 svg.addEventListener('wheel', event => {
@@ -808,7 +717,6 @@ svg.addEventListener('wheel', event => {
   offset.x = home.x - (gx - px * (home.w / zoom));
   offset.y = home.y - (gy - py * (home.h / zoom));
   applyView();
-  revealArtists();
 }, { passive: false });
 
 svg.addEventListener('pointerdown', event => {
@@ -841,13 +749,12 @@ svg.addEventListener('pointermove', event => {
 svg.addEventListener('pointerup', () => { drag = null; });
 svg.addEventListener('pointercancel', () => { drag = null; });
 svg.addEventListener('dblclick', () => {
-  zoom = 1; offset = { x: 0, y: 0 }; applyView(); revealArtists();
+  zoom = 1; offset = { x: 0, y: 0 }; applyView();
 });
 
 // Nothing is selected on load. Choosing is the point, and a pre-picked cluster
 // made the first click remove it.
 applyView();
-revealArtists();
 emphasise();
 renderPanel();
 </script>

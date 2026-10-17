@@ -80,7 +80,6 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 |---|---|
 | A region | One cluster, its glow sized by how many artists it holds, placed so clusters that share artists settle near each other. Where glows overlap, the colour deepens |
 | Its colour | The genre family, so two regions of a colour hold the same broad kind of music. The legend lists them with counts |
-| Its names | Nothing at rest. Artists appear with the zoom, four to a region first and more after, and only where the glow has room to hold them |
 | Hovering | Names what is under the pointer, and leaves the selection alone |
 | Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
 | Wheel and drag | Zooms and pans. Double-click resets |

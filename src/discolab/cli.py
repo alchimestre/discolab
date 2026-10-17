@@ -31,7 +31,6 @@ from .enrich import DeezerEnricher, DeezerError
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .map_view import Cluster
-from .map_view import ARTIST_LABELS
 from .map_view import layout as layout_clusters
 from .map_view import radius_for
 from .map_view import render_page
@@ -1005,14 +1004,6 @@ def map_page(
             """,
             database_=database,
         ).records
-        named = driver.execute_query(
-            """
-            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
-            RETURN a.community AS key, a.name AS name, coalesce(a.external, false) AS external,
-                   coalesce(a.degree, 0) AS degree
-            """,
-            database_=database,
-        ).records
         links = driver.execute_query(
             """
             MATCH (a:Artist)-[r]->(b:Artist)
@@ -1055,12 +1046,6 @@ def map_page(
         own_tags_by_cluster.setdefault(row["key"], {})
         own_tags_by_cluster[row["key"]][row["tag"]] = row["artists"]
 
-    own: dict[int, list[tuple[int, int, str]]] = {}
-    for row in named:
-        own.setdefault(row["key"], []).append(
-            (1 if row["external"] else 0, -row["degree"], row["name"])
-        )
-
     # One entry per artist, carrying every cluster that points at it. Cutting this
     # per cluster was destroying the bridges: 694 artists are pointed at by more
     # than one cluster, and keeping only each cluster's strongest forty left six.
@@ -1100,9 +1085,6 @@ def map_page(
                     own_tags_by_cluster.get(row["key"], {}).items(),
                     key=lambda item: (-item[1], item[0]),
                 )[:3]
-            ),
-            artists=tuple(
-                name for _, _, name in sorted(own.get(row["key"], []))[:ARTIST_LABELS]
             ),
             labels=tuple(
                 sorted(
