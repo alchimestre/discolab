@@ -88,11 +88,11 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 
 Clusters are found on the graph of related artists and collaborations, not on what shares a playlist. Measured on this library, the co-occurrence graph partitions at a modularity of 0.348 with 26% genre purity inside a cluster; related artists and collaborations give 0.854 and 39.6%, and folding co-occurrence back in at any weight drops it again. Shared genre is not an input either: scoring purity against a signal the clustering can see measures its own input rather than the result.
 
-Sixty-odd raw Deezer labels are folded into eight families before anything is named. Electro, Dance, Techno/House and Trance are one family, because naming a cluster after its top raw label spends sixty names on six ideas. The raw labels stay in the panel, where there is room for them.
+Sixty-odd raw Deezer labels are folded into eight families before anything is drawn. Electro, Dance, Techno/House and Trance are one family, because tinting by the top raw label spends sixty colours on six ideas. The raw labels stay in the panel, where there is room for them.
 
-A cluster's name has to do two jobs: describe the cluster and tell it from the other seventy. Naming by the heaviest genre failed the second, leaving six clusters called Electronic. Naming by the most distinctive failed the first, giving a 2,325-artist cluster the name Blues off thirteen of its artists. So a fetched genre needs a fifth of the cluster, and three of its artists, before it can name it; the owner's tags are held to a tenth. The score multiplies that share by how far the cluster over-represents it. Collisions fall through to the runner-up, then to the pair, then to a label marked as not describing the cluster. All seventy-one names are distinct.
+Clusters are identified by the genre family they lean on, which is also what tints them. Naming one more precisely than that is unsolved and left out for now.
 
-`enrich --per-cluster N` is what gives the names something to work from: ranking by agreement cannot name a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
+`enrich --per-cluster N` is what gives a cluster its genre evidence: ranking by agreement cannot describe a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
 
 ## Checking the candidates
 

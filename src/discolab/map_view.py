@@ -124,10 +124,7 @@ class Cluster:
     y: float = 0.0
     r: float = 0.0
     tag: str = ""
-    name: str = ""
-    named_from: str = ""
     candidates: list[str] = field(default_factory=list)
-    options: list[tuple[str, str]] = field(default_factory=list)
     suggestions: list[dict] = field(default_factory=list)
 
     @property
@@ -146,29 +143,8 @@ class Cluster:
 
     @property
     def colour(self) -> str:
-        """Tint from the genre the cluster is named for, not its heaviest one.
-
-        Colouring by the heaviest genre while naming by the most distinctive one
-        painted Rap/Hip Hop blue, because Electro was its largest single genre.
-        The bubble then disagreed with its own label.
-        """
-        return FAMILY_COLOUR.get(
-            family_of(self.named_from or self.family), FAMILY_COLOUR["Other"]
-        )
-
-    @property
-    def label(self) -> str:
-        """The assigned name, or the least it can honestly say."""
-        if self.name:
-            return self.name
-        if self.tagged < 8:
-            return f"cluster {self.key}"
-        return self.family
-
-    @property
-    def pool(self) -> tuple[tuple[str, int], ...]:
-        """Every label the cluster carries, its own tags included."""
-        return tuple(self.genres) + tuple(self.tags)
+        """Tint from the cluster's family, which is also what names it."""
+        return FAMILY_COLOUR.get(self.family, FAMILY_COLOUR["Other"])
 
     @property
     def sub_genre(self) -> str | None:
@@ -277,116 +253,9 @@ def layout(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> None:
             break
 
 
-# How a label earns the right to stand for a cluster. It has to appear on at
-# least this many artists, and cover this much of what the cluster carries. Tags
-# are held to a lower bar than fetched genres: a tag is the owner's own
-# classification of a sub-scene, where a fetched genre covering a tenth is noise.
-MIN_MENTIONS = 3
-GENRE_FLOOR = 0.20
-TAG_FLOOR = 0.10
-# How deep the fallback reaches into a cluster's labels before giving up and
-# leaving the cluster a number.
-FALLBACK_LABELS = 14
-
-
-def assign_names(clusters: list[Cluster]) -> None:
-    """Give every cluster a name of its own, that also describes it.
-
-    Naming by the heaviest genre made six bubbles say Electronic, which reads as
-    one area rather than six. Naming by the most distinctive one gave a
-    2,325-artist cluster the name Blues, off thirteen of its artists, and called
-    an electronic cluster Musique arabe. A name has to be both: present enough to
-    describe the cluster, and over-represented enough to tell it from the others.
-
-    So a fetched genre has to hold GENRE_FLOOR of what the cluster carries, and
-    appear on MIN_MENTIONS of its artists, before it can name it; the owner's own
-    tags are held to TAG_FLOOR. The score multiplies that share by how much the
-    cluster leans on it. Collisions fall through to the runner-up, then to the
-    pair, then to a label marked as not describing the cluster, until every name
-    is unique. A cluster with nothing above those floors is left a number.
-    """
-    counts: dict[str, int] = {}
-    for cluster in clusters:
-        for name, count in cluster.pool:
-            counts[name] = counts.get(name, 0) + count
-    overall = sum(counts.values()) or 1
-
-    for cluster in clusters:
-        # Genres and tags are counted against different things: a genre share is
-        # of the genre mentions, a tag share is of the cluster. Summing them into
-        # one pool let a handful of tags shrink every genre share and put names on
-        # clusters they described a tenth of.
-        mentions = sum(count for _, count in cluster.genres) or 1
-        scored = []
-        for name, count in cluster.genres:
-            share = count / mentions
-            # A fifth is the floor. Below it the name describes a minority and the
-            # reader takes it for the whole: Rap/Hip Hop naming a cluster that is
-            # eleven per cent rap, recommending electro.
-            if count < MIN_MENTIONS or share < GENRE_FLOOR:
-                continue
-            scored.append((share * (share / (counts[name] / overall)), name))
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        singles = [name for _, name in scored]
-
-        # The owner's own tags, when no fetched genre describes the cluster. A tag
-        # needs a tenth rather than a fifth: it is a deliberate classification of a
-        # real sub-scene, where a fetched genre covering twelve per cent is noise.
-        if not singles and cluster.size:
-            tagged = [
-                (count / cluster.size, name)
-                for name, count in cluster.tags
-                if count >= MIN_MENTIONS and count / cluster.size >= TAG_FLOOR
-            ]
-            tagged.sort(key=lambda item: (-item[0], item[1]))
-            singles = [name for _, name in tagged]
-        # Each candidate keeps the genre it was drawn from, so the bubble can be
-        # tinted for the name it ended up with. Order matters: the strongest name,
-        # then it paired with each other strong one, then the others on their own.
-        # Falling straight through to any genre at all is how a cluster got named
-        # for something covering an eighth of it.
-        options: list[tuple[str, str]] = []
-        if singles:
-            options.append((singles[0], singles[0]))
-            for other in singles[1:]:
-                options.append((f"{singles[0]} & {other}", singles[0]))
-            for other in singles[1:]:
-                options.append((other, other))
-            for i, first in enumerate(singles[1:], start=1):
-                for second in singles[i + 1:]:
-                    options.append((f"{first} & {second}", first))
-        # Before falling back to a number: the labels the cluster does carry,
-        # marked as not describing it. A number tells the reader nothing at all.
-        # The count floor holds here too, or a cluster of four hundred artists
-        # gets named for a label two of them carry.
-        fallbacks = 0
-        for name, count in sorted(cluster.pool, key=lambda item: (-item[1], item[0])):
-            if count < MIN_MENTIONS or fallbacks >= FALLBACK_LABELS:
-                break
-            options.append((f"mixed · {name}", name))
-            fallbacks += 1
-        options.append((f"cluster {cluster.key}", cluster.family))
-        cluster.options = options
-
-    taken: set[str] = set()
-    # Largest first, so the biggest clusters get the best of contested names.
-    for cluster in sorted(clusters, key=lambda c: (-c.size, c.key)):
-        chosen = ""
-        source = ""
-        for candidate, from_genre in cluster.options:
-            if candidate and candidate not in taken:
-                chosen, source = candidate, from_genre
-                break
-        if not chosen:
-            chosen, source = f"cluster {cluster.key}", ""
-        cluster.name = chosen
-        cluster.named_from = source
-        taken.add(chosen)
-
-
 # How far a cluster's glow reaches past its own radius, and how many of its
 # artists the map can name at full zoom.
-HALO = 3.0
+HALO = 1.9
 ARTIST_LABELS = 24
 GOLDEN = math.pi * (3 - math.sqrt(5))
 
@@ -453,14 +322,14 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
     """
     families: list[str] = []
     for cluster in clusters:
-        family = family_of(cluster.named_from or cluster.family)
+        family = cluster.family
         if family not in families:
             families.append(family)
     tint = {family: f"heat-{index}" for index, family in enumerate(families)}
     defs = "".join(
         f'<radialGradient id="{tint[family]}">'
-        f'<stop offset="0" stop-color="{_colour(family)}" stop-opacity="0.42"/>'
-        f'<stop offset="0.40" stop-color="{_colour(family)}" stop-opacity="0.24"/>'
+        f'<stop offset="0" stop-color="{_colour(family)}" stop-opacity="0.60"/>'
+        f'<stop offset="0.50" stop-color="{_colour(family)}" stop-opacity="0.32"/>'
         f'<stop offset="1" stop-color="{_colour(family)}" stop-opacity="0"/>'
         f"</radialGradient>"
         for family in families
@@ -470,8 +339,8 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
     marks: list[str] = []
     hits: list[str] = []
     for cluster in clusters:
-        family = family_of(cluster.named_from or cluster.family)
-        title = f"{cluster.label} · {cluster.size:,} artists"
+        family = cluster.family
+        title = f"{cluster.family} · {cluster.size:,} artists"
         heat.append(
             f'<circle class="heat" data-key="{cluster.key}" '
             f'cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" '
@@ -521,8 +390,6 @@ def _payload(clusters: list[Cluster], candidates: list[dict]) -> str:
                     "size": cluster.size,
                     "corpus": cluster.corpus,
                     "tagged": cluster.tagged,
-                    "label": cluster.label,
-                    "named_from": cluster.named_from,
                     "family": cluster.family,
                     "colour": cluster.colour,
                     "sub_genre": cluster.sub_genre,
@@ -563,7 +430,10 @@ PAGE = """<!doctype html>
   svg#map { width: 100%; height: 100%; display: block; }
   .heat { pointer-events: none; transition: opacity .12s; }
   .heat.dimmed { opacity: .22; }
-  .hit { fill: transparent; cursor: pointer; }
+  /* The selected and linked rings set fill: none, and an unpainted SVG shape
+     receives no pointer events, so without this a selected cluster could not be
+     clicked again to deselect it. */
+  .hit { fill: transparent; cursor: pointer; pointer-events: all; }
   .hit:hover { fill: color-mix(in srgb, currentColor 7%, transparent); }
   .hit.active { fill: none; stroke: currentColor; stroke-width: 1.5;
                 stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; }
@@ -742,7 +612,7 @@ function selectedCandidates() {
       name: candidate.name,
       styles: candidate.styles,
       hits: hits,
-      from: hits.map(key => (byKey.get(key) || {}).label || String(key)),
+      from: hits.map(key => (byKey.get(key) || {}).family || String(key)),
       pointers: pointers,
     });
   }
@@ -785,7 +655,7 @@ function renderPanel() {
       ? c.genres.slice(0, 5).map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('') +
         '<span>' + c.tagged + ' of ' + c.size.toLocaleString() + ' tagged</span>'
       : '<span>no genres recorded yet</span>';
-    head = '<h2 style="color:' + c.colour + '">' + esc(c.label) + '</h2>' +
+    head = '<h2 style="color:' + c.colour + '">' + esc(c.family) + '</h2>' +
       '<p class="meta">' + c.size.toLocaleString() + ' artists · ' +
       c.corpus.toLocaleString() + ' of them yours · cluster ' + c.key + ' · ' +
       esc(c.family) + '</p>' +
@@ -800,7 +670,7 @@ function renderPanel() {
       yours.toLocaleString() + ' of them yours</p>';
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
-    esc(c.label) + ' ×</button>').join('');
+    esc(c.family) + ' ×</button>').join('');
   // With one cluster on, name the clusters that would answer. Choosing blind is
   // how you land on one of the five hundred and seventy-four pairs that share
   // nothing and read it as a broken page.
@@ -812,7 +682,7 @@ function renderPanel() {
     partners = linked.length
       ? '<p class="aside">Shares candidates with</p><div class="partners">' +
         linked.map(([key, n]) => '<button data-add="' + key + '">' +
-          esc((byKey.get(key) || {}).label || key) + ' <b>' + n + '</b></button>').join('') +
+          esc((byKey.get(key) || {}).family || key) + ' <b>' + n + '</b></button>').join('') +
         '</div>'
       : '<p class="aside">Shares no candidates with any other cluster.</p>';
   }
@@ -873,7 +743,7 @@ for (const hit of hits) {
   // on a pick made every other cluster unreadable.
   hit.addEventListener('mouseenter', () => {
     const c = byKey.get(key);
-    tip.textContent = c.label + ' · ' + c.size.toLocaleString() + ' artists · ' + c.family;
+    tip.textContent = c.family + ' · ' + c.size.toLocaleString() + ' artists';
   });
   hit.addEventListener('focus', () => hit.dispatchEvent(new Event('mouseenter')));
   hit.addEventListener('mouseleave', () => { tip.textContent = ''; });

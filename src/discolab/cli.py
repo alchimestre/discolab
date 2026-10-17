@@ -31,7 +31,6 @@ from .enrich import DeezerEnricher, DeezerError
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .map_view import Cluster
-from .map_view import assign_names
 from .map_view import ARTIST_LABELS
 from .map_view import layout as layout_clusters
 from .map_view import radius_for
@@ -1117,7 +1116,6 @@ def map_page(
     clusters.sort(key=lambda cluster: (-cluster.size, cluster.key))
     hidden = sum(1 for cluster in clusters if cluster.size < min_size)
     clusters = [cluster for cluster in clusters if cluster.size >= min_size]
-    assign_names(clusters)
     biggest = max((cluster.size for cluster in clusters), default=1)
     for cluster in clusters:
         cluster.r = radius_for(cluster.size, biggest)
