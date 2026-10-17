@@ -284,6 +284,7 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
     )
 
     heat: list[str] = []
+    areas: list[str] = []
     hits: list[str] = []
     for cluster in clusters:
         family = cluster.family
@@ -293,6 +294,17 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
             f'cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" '
             f'r="{cluster.r * HALO:.1f}" fill="url(#{tint[family]})"/>'
         )
+        # Only the owner's own tags name an area. A region without one stays
+        # silent rather than having a guess written across it.
+        if cluster.sub_genre:
+            areas.append(
+                f'<text class="area" data-key="{cluster.key}" '
+                f'data-glow="{cluster.r * HALO:.1f}" data-size="{cluster.size}" '
+                f'data-chars="{len(cluster.sub_genre)}" '
+                f'x="{cluster.x:.1f}" y="{cluster.y:.1f}" '
+                f'text-anchor="middle" dominant-baseline="central">'
+                f"{html.escape(cluster.sub_genre)}</text>"
+            )
         hits.append(
             f'<circle class="hit" data-key="{cluster.key}" tabindex="0" '
             f'role="button" aria-label="{html.escape(title)}" '
@@ -314,6 +326,7 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
         f'preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">'
         f"<defs>{defs}</defs>"
         f'<g id="heat">{"".join(heat)}</g>'
+        f'<g id="areas">{"".join(areas)}</g>'
         f'<g id="hits">{"".join(hits)}</g>'
         f"</svg>"
     )
@@ -379,6 +392,9 @@ PAGE = """<!doctype html>
   .hit:focus { outline: none; }
   .hit:focus-visible { fill: none; stroke: currentColor; stroke-width: 2;
                        vector-effect: non-scaling-stroke; }
+  .area { fill: var(--ink); opacity: .92; pointer-events: none;
+          font-size: var(--area-label, 12px);
+          paint-order: stroke; stroke: Canvas; stroke-width: .28em; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
   aside { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 40px; }
@@ -389,7 +405,6 @@ PAGE = """<!doctype html>
   #scope .genres { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
   #scope .genres span { font-size: 11px; padding: 1px 7px; border-radius: 9px;
                         border: 1px solid var(--line); color: var(--quiet); }
-  #scope .own-tag { font-size: 12px; margin: 0 0 12px; }
   #scope .in-cluster { font-size: 12px; color: var(--quiet); margin-bottom: 14px; }
   #scope .picked { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
   #scope .picked button { font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer;
@@ -464,6 +479,7 @@ for (const candidate of DATA.candidates) {
 }
 const heats = [...document.querySelectorAll('.heat')];
 const hits = [...document.querySelectorAll('.hit')];
+const areas = [...document.querySelectorAll('.area')];
 const scope = document.getElementById('scope');
 const tip = document.getElementById('tip');
 const picked = new Set();
@@ -563,15 +579,15 @@ function renderPanel() {
   } else if (chosen.length === 1) {
     const c = chosen[0];
     const genres = c.genres.length
-      ? c.genres.slice(0, 5).map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('') +
-        '<span>' + c.tagged + ' of ' + c.size.toLocaleString() + ' tagged</span>'
+      ? c.genres.slice(0, 5).map(g => '<span>' + esc(g.name) + ' ' + g.n + '</span>').join('')
       : '<span>no genres recorded yet</span>';
-    head = '<h2 style="color:' + c.colour + '">' +
-      c.size.toLocaleString() + ' artists</h2>' +
-      '<p class="meta">' + c.corpus.toLocaleString() + ' of them yours · ' +
+    // Your own tags name the region when one reaches it, and the count stands in
+    // when none does. Nothing else tries to say what it is.
+    const title = c.sub_genre ? esc(c.sub_genre) : c.size.toLocaleString() + ' artists';
+    head = '<h2 style="color:' + c.colour + '">' + title + '</h2>' +
+      '<p class="meta">' + c.size.toLocaleString() + ' artists · ' +
+      c.corpus.toLocaleString() + ' of them yours · ' +
       c.tagged.toLocaleString() + ' tagged</p>' +
-      (c.sub_genre ? '<p class="own-tag">Your own tag for it: <strong>' +
-        esc(c.sub_genre) + '</strong></p>' : '') +
       '<div class="genres">' + genres + '</div>';
   } else {
     const size = chosen.reduce((n, c) => n + c.size, 0);
@@ -582,7 +598,7 @@ function renderPanel() {
   }
   const chips = chosen.map(c => '<button data-drop="' + c.key + '">' +
     '<span class="dot" style="background:' + c.colour + '"></span>' +
-    c.size.toLocaleString() + ' ×</button>').join('');
+    (c.sub_genre ? esc(c.sub_genre) : c.size.toLocaleString()) + ' ×</button>').join('');
   // With one cluster on, name the clusters that would answer. Choosing blind is
   // how you land on one of the five hundred and seventy-four pairs that share
   // nothing and read it as a broken page.
@@ -597,7 +613,8 @@ function renderPanel() {
           const c = byKey.get(key) || {};
           return '<button data-add="' + key + '">' +
             '<span class="dot" style="background:' + (c.colour || '#8a8f98') + '"></span>' +
-            (c.size || 0).toLocaleString() + '</button>';
+            (c.sub_genre ? esc(c.sub_genre) : (c.size || 0).toLocaleString()) +
+            '</button>';
         }).join('') +
         '</div>'
       : '<p class="aside">Shares no candidates with any other cluster.</p>';
@@ -654,7 +671,8 @@ for (const hit of hits) {
   // on a pick made every other cluster unreadable.
   hit.addEventListener('mouseenter', () => {
     const c = byKey.get(key);
-    tip.textContent = c.size.toLocaleString() + ' artists';
+    tip.textContent = (c.sub_genre ? c.sub_genre + ' · ' : '') +
+      c.size.toLocaleString() + ' artists';
   });
   hit.addEventListener('focus', () => hit.dispatchEvent(new Event('mouseenter')));
   hit.addEventListener('mouseleave', () => { tip.textContent = ''; });
@@ -676,10 +694,45 @@ let offset = { x: 0, y: 0 };
 let moved = 0;
 let drag = null;
 
+// A name goes on an area only where the area can hold it and no name already
+// placed is in the way. Twelve-pixel text needs a bit over half its size per
+// character; the text may run out to the glow rather than stopping at the core,
+// and the largest areas are placed first so the map's main shapes keep their
+// names as the smaller ones drop out.
+const AREA_CHAR = 0.58;
+const AREA_PX = 12;
+const AREA_H = 15;
+const AREA_ROOM = 1.5;
+const areaOrder = [...areas].sort((a, b) => Number(b.dataset.size) - Number(a.dataset.size));
+function revealAreas() {
+  const parts = svg.getAttribute('viewBox').trim().split(/[ ,]+/).map(Number);
+  const scale = svg.clientWidth / Math.max(1, parts[2]);
+  const placed = [];
+  for (const mark of areaOrder) {
+    const room = 2 * Number(mark.dataset.glow) * AREA_ROOM * scale;
+    const need = Number(mark.dataset.chars) * AREA_CHAR * AREA_PX;
+    if (room < need) { mark.style.display = 'none'; continue; }
+    const px = (Number(mark.getAttribute('x')) - parts[0]) * scale;
+    const py = (Number(mark.getAttribute('y')) - parts[1]) * scale;
+    const box = [px - need / 2, py - AREA_H / 2, px + need / 2, py + AREA_H / 2];
+    if (placed.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) {
+      mark.style.display = 'none';
+      continue;
+    }
+    placed.push(box);
+    mark.style.display = 'inline';
+  }
+}
+
 function applyView() {
   const w = home.w / zoom;
   svg.setAttribute('viewBox',
     (home.x - offset.x) + ' ' + (home.y - offset.y) + ' ' + w + ' ' + (home.h / zoom));
+  // Names are drawn in graph units, so scaling the font the other way keeps them
+  // the same size on screen at any depth.
+  svg.style.setProperty('--area-label',
+    (AREA_PX * w / Math.max(1, svg.clientWidth)).toFixed(2) + 'px');
+  revealAreas();
 }
 
 svg.addEventListener('wheel', event => {

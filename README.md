@@ -79,7 +79,8 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 | Element | Meaning |
 |---|---|
 | A region | One cluster, its glow sized by how many artists it holds, placed so clusters that share artists settle near each other. Where glows overlap, the colour deepens |
-| Its colour | The genre family, so two regions of a colour hold the same broad kind of music. The legend lists them with counts |
+| Its colour | The genre family, so two regions of a colour hold the same broad kind of music |
+| Its name | The rekordbox tag the region's artists share, where they share one: Raw / Deep / Hypnotic, Maghreb & Mashriq, Central Asian. A region with no tag stays unnamed. Names are placed largest region first and skipped where one would land on another, so all of them appear by about three times zoom |
 | Hovering | Names what is under the pointer, and leaves the selection alone |
 | Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
 | Wheel and drag | Zooms and pans. Double-click resets |
