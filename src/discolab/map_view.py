@@ -129,7 +129,6 @@ class Cluster:
     candidates: list[str] = field(default_factory=list)
     options: list[tuple[str, str]] = field(default_factory=list)
     suggestions: list[dict] = field(default_factory=list)
-    inner: list[dict] = field(default_factory=list)
 
     @property
     def families(self) -> tuple[tuple[str, int], ...]:
@@ -385,124 +384,130 @@ def assign_names(clusters: list[Cluster]) -> None:
         taken.add(chosen)
 
 
-def place_inner(cluster: Cluster, groups: list[list[tuple[str, str]]]) -> None:
-    """Lay a cluster's sub-groups out inside its own circle.
+# How far a cluster's glow reaches past its own radius, and how many of its
+# artists the map can name at full zoom.
+HALO = 3.0
+ARTIST_LABELS = 24
+GOLDEN = math.pi * (3 - math.sqrt(5))
 
-    Positions are a ring, sized by membership, so the sub-groups read as parts of
-    the bubble rather than as a second map. Revealed on zoom, because at rest the
-    cluster is the unit that matters.
+
+def _colour(family: str) -> str:
+    return FAMILY_COLOUR.get(family, FAMILY_COLOUR["Other"])
+
+
+def _spread_order(count: int) -> list[int]:
+    """An ordering whose every prefix is spread over the ring.
+
+    Names arrive a tier at a time, so the first four have to cover the disc as
+    well as the first twenty-four do. Reversing the bits of each index does that
+    without a packing pass.
     """
-    if not groups:
-        return
-    biggest = max(len(group) for group in groups)
-    ring = cluster.r * 0.42
-    placed = []
-    for index, group in enumerate(groups):
-        angle = (index / len(groups)) * math.tau - math.pi / 2
-        radius = max(4.0, cluster.r * 0.34 * math.sqrt(len(group) / biggest))
-        # The name is the group's most connected member, which is the one that
-        # says most about what the sub-group is.
-        placed.append(
+    bits = max(1, (count - 1).bit_length())
+
+    def reversed_bits(index: int) -> int:
+        out = 0
+        for _ in range(bits):
+            out = (out << 1) | (index & 1)
+            index >>= 1
+        return out
+
+    return sorted(range(count), key=reversed_bits)
+
+
+def _artist_marks(cluster: Cluster) -> list[dict]:
+    """Where each named artist of a cluster sits, and how strongly it ranks.
+
+    A spiral inside the hot core spreads them without a packing pass, and the
+    golden angle keeps neighbours from lining up as more of them appear. The rank
+    is the position in an order whose prefixes stay spread, so raising the tier
+    fills the disc rather than deepening its middle.
+    """
+    names = cluster.artists[:ARTIST_LABELS]
+    if not names:
+        return []
+    span = max(1, len(names) - 1)
+    marks = []
+    for index, name in enumerate(names):
+        radius = cluster.r * (0.28 + 0.64 * (index / span))
+        angle = index * GOLDEN
+        marks.append(
             {
-                "name": group[0][1],
-                "size": len(group),
-                "x": cluster.x + math.cos(angle) * ring,
-                "y": cluster.y + math.sin(angle) * ring,
-                "r": radius,
-                "colour": cluster.colour,
+                "name": name,
+                "rank": 0,
+                "x": cluster.x + math.cos(angle) * radius,
+                "y": cluster.y + math.sin(angle) * radius,
             }
         )
-    cluster.inner = placed
+    for rank, position in enumerate(_spread_order(len(marks))):
+        marks[position]["rank"] = rank
+    return marks
 
 
-def _short(label: str, limit: int = 26) -> str:
-    """Trim to a word boundary, so a bubble never reads like a typo."""
-    if len(label) <= limit:
-        return label
-    cut = label[:limit]
-    space = cut.rfind(" ")
-    if space > 8:
-        cut = cut[:space]
-    return cut.rstrip(" /&") + "…"
+def _heatmap_svg(clusters: list[Cluster]) -> str:
+    """Draw the taste as a heat field: density, no outlines, no names at rest.
 
-
-def _cluster_svg(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> str:
-    at = {cluster.key: cluster for cluster in clusters}
-    heaviest = max((weight for _, _, weight in edges), default=1)
-
-    # Only the edges that carry real weight. Seventy-one nodes with every pair
-    # drawn is a hairball, and the strong links stop reading as strong.
-    floor = max(2.0, heaviest * 0.06)
-    lines = []
-    for a, b, weight in edges:
-        one, two = at.get(a), at.get(b)
-        if one is None or two is None or one is two or weight < floor:
-            continue
-        alpha = 0.10 + 0.40 * (weight / heaviest)
-        lines.append(
-            f'<line class="edge" data-a="{a}" data-b="{b}" '
-            f'x1="{one.x:.1f}" y1="{one.y:.1f}" x2="{two.x:.1f}" y2="{two.y:.1f}" '
-            f'stroke-width="{0.8 + 4.0 * (weight / heaviest):.2f}" '
-            f'stroke-opacity="{alpha:.3f}"/>'
-        )
-
-    # A label on every bubble collides and none of them read. The largest get
-    # text, and only where the bubble is big enough to hold it; the rest are
-    # identified by hovering, which every bubble answers to.
-    ranked = sorted(clusters, key=lambda c: (-c.size, c.key))
-    labelled = {c.key for c in ranked[:22]}
-
-    bubbles = []
+    Every cluster is a soft radial blob at its layout position, tinted by the
+    family it is named for. Where blobs meet the colour deepens, so the reader
+    sees where the library is thick without a single boundary. Names arrive with
+    the zoom, because a map that names everything at rest names nothing.
+    """
+    families: list[str] = []
     for cluster in clusters:
-        label = cluster.label
-        title = f"{label} · {cluster.size:,} artists"
-        show = cluster.key in labelled and cluster.r >= 15.0
-        text = (
-            f'<text x="{cluster.x:.1f}" y="{cluster.y:.1f}" text-anchor="middle" '
-            f'dominant-baseline="central" '
-            f'font-size="{max(11.0, min(18.0, cluster.r * 0.40)):.0f}">'
-            f"{html.escape(_short(label))}</text>"
-            if show
-            else ""
-        )
-        bubbles.append(
-            f'<g class="bubble" data-key="{cluster.key}" '
-            f'data-family="{html.escape(cluster.family)}" tabindex="0" role="button" '
-            f'aria-label="{html.escape(title)}">'
-            f"<title>{html.escape(title)}</title>"
-            f'<circle cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" r="{cluster.r:.1f}" '
-            f'fill="{cluster.colour}" fill-opacity="0.30" stroke="{cluster.colour}"/>'
-            f"{text}</g>"
-        )
+        family = family_of(cluster.named_from or cluster.family)
+        if family not in families:
+            families.append(family)
+    tint = {family: f"heat-{index}" for index, family in enumerate(families)}
+    defs = "".join(
+        f'<radialGradient id="{tint[family]}">'
+        f'<stop offset="0" stop-color="{_colour(family)}" stop-opacity="0.42"/>'
+        f'<stop offset="0.40" stop-color="{_colour(family)}" stop-opacity="0.24"/>'
+        f'<stop offset="1" stop-color="{_colour(family)}" stop-opacity="0"/>'
+        f"</radialGradient>"
+        for family in families
+    )
 
-    # Sub-groups, drawn but hidden until the map is zoomed far enough to read them.
-    inner = []
+    heat: list[str] = []
+    marks: list[str] = []
+    hits: list[str] = []
     for cluster in clusters:
-        for part in cluster.inner:
-            inner.append(
-                f'<g class="inner-bubble">'
-                f"<title>{html.escape(part['name'])} · {part['size']} artists</title>"
-                f'<circle cx="{part["x"]:.1f}" cy="{part["y"]:.1f}" r="{part["r"]:.1f}" '
-                f'fill="{part["colour"]}" fill-opacity="0.55" stroke="{part["colour"]}"/>'
-                f'<text x="{part["x"]:.1f}" y="{part["y"]:.1f}" text-anchor="middle" '
-                f'dominant-baseline="central">'
-                f"{html.escape(part['name'][:16])}</text></g>"
+        family = family_of(cluster.named_from or cluster.family)
+        title = f"{cluster.label} · {cluster.size:,} artists"
+        heat.append(
+            f'<circle class="heat" data-key="{cluster.key}" '
+            f'cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" '
+            f'r="{cluster.r * HALO:.1f}" fill="url(#{tint[family]})"/>'
+        )
+        hits.append(
+            f'<circle class="hit" data-key="{cluster.key}" tabindex="0" '
+            f'role="button" aria-label="{html.escape(title)}" '
+            f'cx="{cluster.x:.1f}" cy="{cluster.y:.1f}" r="{cluster.r:.1f}">'
+            f"<title>{html.escape(title)}</title></circle>"
+        )
+        for mark in _artist_marks(cluster):
+            marks.append(
+                f'<text class="artist" data-key="{cluster.key}" '
+                f'data-rank="{mark["rank"]}" data-r="{cluster.r:.1f}" '
+                f'x="{mark["x"]:.1f}" y="{mark["y"]:.1f}" '
+                f'text-anchor="middle" dominant-baseline="central">'
+                f"{html.escape(mark['name'])}</text>"
             )
 
-    # Fit the viewBox to the bubbles rather than to a square, so the map uses the
-    # whole pane instead of sitting in it with margins.
-    left = min(c.x - c.r for c in clusters)
-    right = max(c.x + c.r for c in clusters)
-    top = min(c.y - c.r for c in clusters)
-    bottom = max(c.y + c.r for c in clusters)
+    # The viewBox has to hold the halos, not the cores, or the heat is cut off at
+    # the edge of the pane.
+    reach = [cluster.r * HALO for cluster in clusters]
+    left = min(cluster.x - extent for cluster, extent in zip(clusters, reach))
+    right = max(cluster.x + extent for cluster, extent in zip(clusters, reach))
+    top = min(cluster.y - extent for cluster, extent in zip(clusters, reach))
+    bottom = max(cluster.y + extent for cluster, extent in zip(clusters, reach))
     pad = 12.0
     return (
         f'<svg id="map" viewBox="{left - pad:.1f} {top - pad:.1f} '
         f'{right - left + pad * 2:.1f} {bottom - top + pad * 2:.1f}" '
         f'preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">'
-        f'<g id="edges">{"".join(lines)}</g>'
-        f'<g id="bubbles">{"".join(bubbles)}</g>'
-        f'<g id="inner" style="display:none">{"".join(inner)}</g>'
+        f"<defs>{defs}</defs>"
+        f'<g id="heat">{"".join(heat)}</g>'
+        f'<g id="artists">{"".join(marks)}</g>'
+        f'<g id="hits">{"".join(hits)}</g>'
         f"</svg>"
     )
 
@@ -556,24 +561,21 @@ PAGE = """<!doctype html>
   #toolbar .stat { font-size: 12px; color: var(--quiet); }
   #graph { flex: 1; min-height: 0; padding: 8px; }
   svg#map { width: 100%; height: 100%; display: block; }
-  .edge { stroke: currentColor; color: var(--ink); }
-  .bubble circle { stroke-width: 1.6; cursor: pointer; transition: fill-opacity .12s; }
-  .bubble text { fill: var(--ink); pointer-events: none; opacity: .95;
-                 paint-order: stroke; stroke: Canvas; stroke-width: 2.5px; }
-  .bubble:hover circle, .bubble:focus-visible circle { stroke-width: 3; fill-opacity: .58; }
-  .bubble:hover text, .bubble:focus-visible text { opacity: 1; }
-  .bubble.active circle { stroke-width: 3.6; fill-opacity: .72; }
-  .bubble.dimmed { opacity: .45; }
-  .bubble.linked circle { stroke-width: 2.8; stroke-dasharray: 7 5; fill-opacity: .42; }
-  .bubble.linked text { opacity: 1; }
-  .bubble.open.linked circle { fill-opacity: .18; }
-  .bubble.open circle { fill-opacity: .12; }
-  .bubble.open text { display: none; }
-  .inner-bubble circle { stroke-width: 1.2; pointer-events: none; }
-  .inner-bubble text { fill: var(--ink); opacity: .95; pointer-events: none;
-                       font-size: var(--inner-label, 10px);
-                       paint-order: stroke; stroke: Canvas; stroke-width: 2px; }
-  .bubble:focus { outline: none; }
+  .heat { pointer-events: none; transition: opacity .12s; }
+  .heat.dimmed { opacity: .22; }
+  .hit { fill: transparent; cursor: pointer; }
+  .hit:hover { fill: color-mix(in srgb, currentColor 7%, transparent); }
+  .hit.active { fill: none; stroke: currentColor; stroke-width: 1.5;
+                stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; }
+  .hit.linked { fill: none; stroke: currentColor; stroke-width: 1;
+                stroke-dasharray: 3 6; stroke-opacity: .5;
+                vector-effect: non-scaling-stroke; }
+  .hit:focus { outline: none; }
+  .hit:focus-visible { fill: none; stroke: currentColor; stroke-width: 2;
+                       vector-effect: non-scaling-stroke; }
+  .artist { fill: var(--ink); opacity: .92; pointer-events: none; display: none;
+            font-size: var(--artist-label, 10px);
+            paint-order: stroke; stroke: Canvas; stroke-width: .2em; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
   aside { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 40px; }
@@ -627,7 +629,7 @@ PAGE = """<!doctype html>
     <span class="stat" id="tip"></span>
   </div>
   <div id="graph">__SVG__</div>
-  <p id="hint">Hover to inspect. Click a bubble to scope the suggestions.</p>
+  <p id="hint">Hover to inspect. Click a region to scope the suggestions. Zoom for names.</p>
 </div>
 
 <aside>
@@ -660,8 +662,9 @@ for (const candidate of DATA.candidates) {
     }
   }
 }
-const bubbles = [...document.querySelectorAll('.bubble')];
-const edges = [...document.querySelectorAll('.edge')];
+const heats = [...document.querySelectorAll('.heat')];
+const hits = [...document.querySelectorAll('.hit')];
+const artists = [...document.querySelectorAll('.artist')];
 const scope = document.getElementById('scope');
 const tip = document.getElementById('tip');
 const picked = new Set();
@@ -692,18 +695,16 @@ function colourOf(family) {
 function emphasise() {
   const only = picked.size === 1 ? [...picked][0] : null;
   const partners = only === null ? null : (neighbours.get(only) || new Map());
-  for (const b of bubbles) {
-    const key = Number(b.dataset.key);
+  for (const heat of heats) {
+    const key = Number(heat.dataset.key);
     const on = picked.has(key);
     const linked = partners !== null && partners.has(key);
-    b.classList.toggle('active', on);
-    b.classList.toggle('linked', linked);
-    b.classList.toggle('dimmed', picked.size > 0 && !on && !linked);
+    heat.classList.toggle('dimmed', picked.size > 0 && !on && !linked);
   }
-  for (const e of edges) {
-    const on = picked.size === 0
-      || picked.has(Number(e.dataset.a)) || picked.has(Number(e.dataset.b));
-    e.style.strokeOpacity = on ? '' : '0.02';
+  for (const hit of hits) {
+    const key = Number(hit.dataset.key);
+    hit.classList.toggle('active', picked.has(key));
+    hit.classList.toggle('linked', partners !== null && partners.has(key));
   }
 }
 
@@ -865,18 +866,18 @@ function renderPanel() {
   }
 }
 
-for (const b of bubbles) {
-  const key = Number(b.dataset.key);
+for (const hit of hits) {
+  const key = Number(hit.dataset.key);
   // Hovering inspects and clicking picks, and the two are separate: the list
   // stays on what was picked while the pointer reads the rest. Returning early
   // on a pick made every other cluster unreadable.
-  b.addEventListener('mouseenter', () => {
+  hit.addEventListener('mouseenter', () => {
     const c = byKey.get(key);
     tip.textContent = c.label + ' · ' + c.size.toLocaleString() + ' artists · ' + c.family;
   });
-  b.addEventListener('focus', () => b.dispatchEvent(new Event('mouseenter')));
-  b.addEventListener('mouseleave', () => { tip.textContent = ''; });
-  b.addEventListener('click', () => {
+  hit.addEventListener('focus', () => hit.dispatchEvent(new Event('mouseenter')));
+  hit.addEventListener('mouseleave', () => { tip.textContent = ''; });
+  hit.addEventListener('click', () => {
     if (moved > 4) return;   // that was a pan, not a pick
     if (picked.has(key)) picked.delete(key); else picked.add(key);
     emphasise();
@@ -901,15 +902,27 @@ function applyView() {
   // Labels are drawn in graph units, so they grow with the zoom. Scaling the
   // font the other way keeps them the same size on screen at any depth.
   const unitsPerPixel = w / Math.max(1, svg.clientWidth);
-  svg.style.setProperty('--inner-label', (11 * unitsPerPixel).toFixed(2) + 'px');
+  svg.style.setProperty('--artist-label', (11 * unitsPerPixel).toFixed(2) + 'px');
 }
 
-// The sub-groups inside a cluster are unreadable at rest and obvious up close,
-// so they appear once the zoom can carry them and the parent steps back.
-function revealInner() {
-  const show = zoom >= 2.4;
-  document.getElementById('inner').style.display = show ? '' : 'none';
-  for (const b of bubbles) b.classList.toggle('open', show);
+// No names at rest: the map reads as density until the zoom can carry text. Each
+// tier adds the next band of an artist's rank, so leaning in fills the region
+// rather than swapping one set of names for another.
+const ARTIST_TIERS = [[2.2, 4], [4, 8], [8, 16], [14, 24]];
+// A name needs room around it, so a cluster shows no more than its disc can hold
+// at this depth. Without it the small regions keep the full tier and the text
+// stacks on itself while the large ones have space to spare.
+const NAME_PITCH = 26;
+function revealArtists() {
+  let limit = 0;
+  for (const [at, count] of ARTIST_TIERS) if (zoom >= at) limit = count;
+  const parts = svg.getAttribute('viewBox').trim().split(/[ ,]+/).map(Number);
+  const scale = svg.clientWidth / Math.max(1, parts[2]);
+  for (const mark of artists) {
+    const room = Number(mark.dataset.r) * scale;
+    const fit = Math.min(limit, Math.floor(room / NAME_PITCH));
+    mark.style.display = Number(mark.dataset.rank) < fit ? 'inline' : 'none';
+  }
 }
 
 svg.addEventListener('wheel', event => {
@@ -925,7 +938,7 @@ svg.addEventListener('wheel', event => {
   offset.x = home.x - (gx - px * (home.w / zoom));
   offset.y = home.y - (gy - py * (home.h / zoom));
   applyView();
-  revealInner();
+  revealArtists();
 }, { passive: false });
 
 svg.addEventListener('pointerdown', event => {
@@ -958,12 +971,13 @@ svg.addEventListener('pointermove', event => {
 svg.addEventListener('pointerup', () => { drag = null; });
 svg.addEventListener('pointercancel', () => { drag = null; });
 svg.addEventListener('dblclick', () => {
-  zoom = 1; offset = { x: 0, y: 0 }; applyView(); revealInner();
+  zoom = 1; offset = { x: 0, y: 0 }; applyView(); revealArtists();
 });
 
 // Nothing is selected on load. Choosing is the point, and a pre-picked cluster
 // made the first click remove it.
 applyView();
+revealArtists();
 emphasise();
 renderPanel();
 </script>
@@ -974,11 +988,10 @@ renderPanel();
 def render_page(
     title: str,
     clusters: list[Cluster],
-    edges: list[tuple[int, int, int]],
     candidates: list[dict],
 ) -> str:
     return (
         PAGE.replace("__TITLE__", html.escape(title))
-        .replace("__SVG__", _cluster_svg(clusters, edges))
+        .replace("__SVG__", _heatmap_svg(clusters))
         .replace("__PAYLOAD__", _payload(clusters, candidates))
     )

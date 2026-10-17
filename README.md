@@ -44,7 +44,7 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 | `discolab expand` | Ask Last.fm for artists similar to each cluster centre |
 | `discolab check` | Write one listening page, scoped by cluster or by source |
 | `discolab clusters --pages` | One index page and one frontier page per cluster |
-| `discolab map` | Draw the graph as a bubble map, suggestions scoped to a cluster |
+| `discolab map` | Draw the graph as a heat map, suggestions scoped to a region |
 | `discolab stats` | Node, edge and island counts |
 | `discolab prune` | Drop unplayed tracks and the artists left with none |
 | `discolab reset --yes` | Delete every node and relationship |
@@ -74,23 +74,23 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 
 ## Looking at the shape of it
 
-`discolab map` draws the graph as bubbles and scopes suggestions to one of them.
+`discolab map` draws the graph as a heat field and scopes suggestions to one region of it.
 
 | Element | Meaning |
 |---|---|
-| A bubble | One cluster, sized by how many artists it holds, placed so clusters that share artists settle near each other |
-| Its colour | The genre family, so two bubbles of a colour hold the same broad kind of music. The legend lists them with counts |
-| Its label | The label that cluster leans on most, where it covers enough of the cluster to describe it. No two clusters share a name |
+| A region | One cluster, its glow sized by how many artists it holds, placed so clusters that share artists settle near each other. Where glows overlap, the colour deepens |
+| Its colour | The genre family, so two regions of a colour hold the same broad kind of music. The legend lists them with counts |
+| Its names | Nothing at rest. Artists appear with the zoom, four to a region first and more after, and only where the glow has room to hold them |
 | Hovering | Names what is under the pointer, and leaves the selection alone |
 | Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
-| Wheel and drag | Zooms and pans. Double-click resets. A map you cannot move into is a diagram, and the smaller clusters are only legible up close |
+| Wheel and drag | Zooms and pans. Double-click resets |
 | The list | Artists the selected clusters point at, ranked by how many of their artists point at each, with which clusters did |
 
 Clusters are found on the graph of related artists and collaborations, not on what shares a playlist. Measured on this library, the co-occurrence graph partitions at a modularity of 0.348 with 26% genre purity inside a cluster; related artists and collaborations give 0.854 and 39.6%, and folding co-occurrence back in at any weight drops it again. Shared genre is not an input either: scoring purity against a signal the clustering can see measures its own input rather than the result.
 
 Sixty-odd raw Deezer labels are folded into eight families before anything is named. Electro, Dance, Techno/House and Trance are one family, because naming a cluster after its top raw label spends sixty names on six ideas. The raw labels stay in the panel, where there is room for them.
 
-A cluster's name has to do two jobs: describe the cluster and tell it from the other seventy. Naming by the heaviest genre failed the second, leaving six bubbles called Electronic. Naming by the most distinctive failed the first, giving a 2,325-artist cluster the name Blues off thirteen of its artists. So a label needs at least eight per cent of the cluster before it can name it, and the score multiplies that share by how far the cluster over-represents it. Collisions fall through to the runner-up, then to the pair. All seventy-one names are distinct.
+A cluster's name has to do two jobs: describe the cluster and tell it from the other seventy. Naming by the heaviest genre failed the second, leaving six clusters called Electronic. Naming by the most distinctive failed the first, giving a 2,325-artist cluster the name Blues off thirteen of its artists. So a fetched genre needs a fifth of the cluster, and three of its artists, before it can name it; the owner's tags are held to a tenth. The score multiplies that share by how far the cluster over-represents it. Collisions fall through to the runner-up, then to the pair, then to a label marked as not describing the cluster. All seventy-one names are distinct.
 
 `enrich --per-cluster N` is what gives the names something to work from: ranking by agreement cannot name a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
 
