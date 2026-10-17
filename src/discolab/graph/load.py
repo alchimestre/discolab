@@ -48,31 +48,7 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
-def write_artist_genres(driver: Driver, database: str, rows: list[dict]) -> int:
-    """Attach Discogs styles and label names, and note that the artist was asked about.
-
-    Labels are a property rather than nodes. Affinity through them measured at
-    zero: 1,770 labels across 406 artists, not one holding two of them, so a
-    label graph expressed nothing and only cost a traversal.
-    """
-    if not rows:
-        return 0
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            """
-            UNWIND $rows AS row
-            MATCH (a:Artist {key: row.key})
-            SET a.styles = row.styles,
-                a.labels = row.labels,
-                a.enriched = true
-            """,
-            rows=chunk,
-            database_=database,
-        )
-    return len(rows)
-
-
-def write_lastfm_tags(driver: Driver, database: str, rows: list[dict]) -> int:
+def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach Last.fm's tags where no genre source has described the artist.
 
     Styles are filled rather than replaced. Two taxonomies on one artist make a

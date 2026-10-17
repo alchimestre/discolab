@@ -24,11 +24,11 @@ ITERATIONS = 500
 SEED = 7
 PANEL_SUGGESTIONS = 14
 
-# Deezer answers in French with sixty-odd labels, several of which mean one thing
-# to a listener: Electro, Dance, Techno/House and Trance are one family. Naming a
-# cluster after its top raw label spends sixty names on six ideas, so the labels
-# are folded into families first, and the family is what names and colours the
-# bubble. Raw labels stay in the panel, where there is room for them.
+# Raw labels come sixty to a graph and several of them mean one thing to a
+# listener: techno, house, trance and electro are one family. Naming a cluster
+# after its top raw label spends sixty names on six ideas, so the labels are
+# folded into families first, and the family is what tints the heat. Raw labels
+# stay in the panel, where there is room for them.
 FAMILY_EXACT = {
     "electro pop/electro rock": "Electronic",
     "pop indé/folk": "Pop",
@@ -77,13 +77,17 @@ FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Jazz & Blues", ("jazz", "blues")),
     ("Pop", ("pop", "variété", "chanson", "jeunesse", "comptines")),
     ("Electronic", ("electro", "techno", "house", "dance", "trance", "disco",
-                    "dubstep", "electro", "club", "edm", "dub")),
+                    "dubstep", "club", "edm", "dub", "hardgroove", "acidcore",
+                    "schranz", "idm", "breakbeat", "jungle", "ambient", "ebm",
+                    "synth", "wave", "psytrance", "hardstyle", "rave", "gabber",
+                    "dnb", "drum and bass")),
     ("Rock", ("rock", "metal", "alternative", "indie", "indé", "punk")),
     ("Folk & World", ("folk", "country", "singer", "latino", "africaine", "arabe",
                       "indienne", "brésilienne", "bollywood", "reggae", "world",
                       "maghreb", "mashriq", "anatolia", "levant", "occitan",
                       "sub-saharan", "sahel", "andes", "balkans", "cajun",
-                      "lament", "lullaby", "balearic", "tuareg")),
+                      "lament", "lullaby", "balearic", "tuareg", "gnawa", "sufi",
+                      "qawwali", "rai", "desert blues")),
 )
 
 FAMILY_COLOUR = {

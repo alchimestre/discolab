@@ -1,13 +1,13 @@
-"""Last.fm's community tags, for the artists no genre source has described.
+"""Last.fm's community tags, the graph's only genre source.
 
-Deezer answers for a fifth of the graph and calls a hardgroove record "Electro".
-Last.fm's tags come from listeners rather than a catalogue, so they say
-"hardgroove", "acidcore", "industrial techno", and they exist for artists Deezer
-has never heard of.
+Genre coverage comes from listeners rather than a catalogue, which is why it says
+"hardgroove", "acidcore", "industrial techno" instead of a label a store would
+file under. Tags cost a request each, unlike the similar-artist call that returns
+twenty artists at once, so this is a paced walk rather than a side effect of
+expansion.
 
-They are not free the way the similar-artist call is. That one returns twenty
-artists at once; tags cost a request each. Last.fm's top tags also include places
-and platforms beside genres, so the pile is filtered before it reaches the graph.
+Last.fm's top tags mix genres with places, platforms and moods, so the pile is
+filtered before it reaches the graph.
 """
 
 from __future__ import annotations

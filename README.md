@@ -25,13 +25,13 @@ Neo4j Browser is at `http://localhost:7474`.
 | Step | Command | What it does |
 |---|---|---|
 | 1 | `discolab ingest` | Aggregate every source, resolve the names, load the graph, then attach rekordbox's BPM, keys and tags |
-| 2 | `discolab enrich` | Genres and labels from Deezer |
-| 3 | `discolab guess` | Derive taste communities, expand past them, write the page |
+| 2 | `discolab guess` | Derive taste communities, expand past them, write the page |
+| 3 | `discolab tags` | Last.fm's genre tags for the artists no tag has described |
 
 ```
 uv run discolab ingest
-uv run discolab enrich
 uv run discolab guess
+uv run discolab tags
 ```
 
 Every source is read unless it is switched off or unconfigured, so `ingest` needs no flags. `--no-lastfm` and `--no-spotify` skip one. A source missing its credentials is reported and skipped rather than stopping the run.
@@ -237,35 +237,24 @@ Requiring only two areas let a group of relaxation and singing-bowl seeds put te
 
 Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the page.
 
-## Enriching
+## Genres
 
 ```
-uv run discolab enrich
+uv run discolab tags
 ```
 
-Deezer supplies genres and label names, written as properties rather than as graph nodes.
+Genres come from Last.fm's own tags, written as a property rather than as graph nodes.
 
 | Written | From |
 |---|---|
-| `Artist.styles` | the genres of the artist's albums |
-| `Artist.labels` | the label on those albums |
-| `Artist.enriched` | whether the artist has been asked about |
+| `Artist.styles` | the artist's top Last.fm tags, strongest first |
+| `Artist.lastfm` | whether the artist has been asked about |
 
-It resumes: every artist asked about is marked, so the next run continues where the last stopped. Requests are paced at eight a second across every worker, because Deezer serves fifty requests per five-second window and refuses the rest with HTTP 200 and an error body. That body reads as "no genres" unless it is checked, which is how a rate limit gets written into the graph as a fact. A refusal now stays unasked, and the next run retries it.
+It resumes: every artist asked is marked, so the next run continues where the last stopped. Tags cost one request per artist, where `expand` gets twenty, so the walk is paced at four a second and covers twelve thousand artists in about fifty minutes.
 
-**The route matters more than the query.** `search/album` matches album *titles*, so it returns compilations and soundtracks that merely share a name: Rome resolved to a video-game score and Quelza to a Brazilian record. The correct route is `search/artist`, then that artist's own albums, then each album for its genres and label. That returns `Warp Records` for Squarepusher, `Dekmantel` for Polygonia and `MORD` for Quelza.
+**Only words that describe a sound.** Last.fm's top tags mix genres with places, platforms and moods — `netherlands`, `bandcamp`, `relaxing`. Those fold into no family, so they are dropped, by list and by the `-ese` and `-ish` endings most demonyms share. A tag also has to appear on eight listeners and hold a tenth of the artist's top tag, or it is one person's word.
 
-Deezer answers a near miss with a different artist, `Rome` resolving to `Romé`, so a result is rejected unless the name matches exactly.
-
-Genres are coarser than Discogs styles — `Electro`, `Techno/House`, `Dance` rather than `IDM` and `Breakbeat` — and they are right, which the coarse alternatives were not.
-
-**Labels are a property, not a graph.** Affinity through labels measured at zero: 1,770 distinct labels across 406 artists, not one holding two of the same collection's artists. A collection of one release per small label cannot express signing affinity. The label name stays as one string on the page because it is the only curated human context there: `Ostgut Ton` says what Shed sounds like faster than any score.
-
-`enrich` walks the whole graph by default. `--min-agreement 2` restricts it to the artists two or more seeds agree on, which is the only subset that can reach a page.
-
-`discolab tags` fills the gap from the other side. Last.fm's top tags come from listeners rather than a catalogue, so they say `hardgroove`, `acidcore`, `industrial techno` where Deezer says `Electro`, and they exist for artists Deezer has never heard of — most of the graph. Unlike `expand`, which returns twenty artists per request, tags cost a request each: the walk covers twelve thousand artists in about fifty minutes, and resumes because every artist asked is marked.
-
-Only artists with no style are filled. Stacking two taxonomies on one artist makes a cluster's genre evidence say two things at once. Nationalities and platforms are dropped, by list and by the `-ese` and `-ish` endings most of them share, because they fold into no genre family and would only thicken Other.
+Tags name a sound more precisely than a catalogue does: `hardgroove`, `acidcore`, `industrial techno`, `schranz`. They fold into eight families before the heat is tinted, because techno, house, trance and electro are one family to a listener.
 
 ## Known limits
 

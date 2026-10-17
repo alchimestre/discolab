@@ -27,7 +27,6 @@ from .check import (
     write_page,
 )
 from .config import Settings, load_env_file
-from .enrich import DeezerEnricher, DeezerError
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .map_view import Cluster
@@ -438,172 +437,6 @@ def expand(
     typer.echo(f"links between your own artists: {linked} ({share})")
     typer.echo(f"new artists written: {fresh_count}")
     typer.echo(f"dropped {dropped} that only one seed named, which cannot reach a page")
-
-
-@app.command()
-def enrich(
-    external_only: bool = typer.Option(
-        False, "--external-only", help="Limit the pass to artists from expansion."
-    ),
-    workers: int = typer.Option(
-        10, "--workers", help="Parallel requests. Paced by --rate, not by the pool size."
-    ),
-    rate: float = typer.Option(
-        8.0,
-        "--rate",
-        help="Requests per second across every worker. Deezer refuses above its own "
-        "limit with HTTP 200 and an error body.",
-    ),
-    keep_going: bool = typer.Option(
-        False, "--keep-going", help="Repeat until every artist has been asked about."
-    ),
-    min_agreement: int = typer.Option(
-        0,
-        "--min-agreement",
-        help="Only ask about artists this many seeds point at. 0 walks everything.",
-    ),
-    top_percent: float = typer.Option(
-        1.0,
-        "--top-percent",
-        help="Only enrich the top this share of candidates, ranked by how many "
-        "seeds point at them. 1 is the P99.",
-    ),
-    per_cluster: int = typer.Option(
-        0,
-        "--per-cluster",
-        help="Instead of a percentile, ask about the most connected artists of "
-        "every cluster, this many each. This is what names the clusters on the map.",
-    ),
-    refresh: bool = typer.Option(
-        False, "--refresh", help="Ask again about artists already done."
-    ),
-    limit: int = typer.Option(
-        8000, "--limit", help="Absolute cap on artists asked about in one run."
-    ),
-) -> None:
-    """Fetch genres and labels for the candidates that can surface."""
-    settings = _settings([])
-    if refresh:
-        with store.connect(settings) as driver:
-            store.clear_enriched_flag(driver, settings.neo4j_database, external_only)
-
-    if per_cluster:
-        with store.connect(settings) as driver:
-            selected = len(
-                query.artists_by_cluster_centrality(
-                    driver, settings.neo4j_database, per_cluster, limit
-                )
-            )
-        typer.echo(
-            f"Asking about the most connected {per_cluster} artists of every cluster, "
-            f"{selected} of them."
-        )
-        _enrich_artists_with_deezer(
-            settings, limit, external_only, keep_going, min_agreement, workers, rate,
-            per_cluster,
-        )
-        return
-
-    with store.connect(settings) as driver:
-        pending = query.count_artists_needing_genres(
-            driver, settings.neo4j_database, external_only, min_agreement
-        )
-    share = max(top_percent, 0.01) / 100.0
-    wanted = min(limit, max(1, math.ceil(pending * share)))
-    typer.echo(
-        f"{pending} artists have no genres. Asking about the top {wanted}, which is "
-        f"the P{100 - share * 100:.2f} cut."
-    )
-    _enrich_artists_with_deezer(
-        settings, wanted, external_only, keep_going, min_agreement, workers, rate
-    )
-
-
-def _ask(enricher: DeezerEnricher, name: str):
-    try:
-        return ("ok", enricher.facts(name))
-    except DeezerError as error:
-        return ("failed", str(error))
-
-
-def _enrich_artists_with_deezer(
-    settings: Settings,
-    limit: int,
-    external_only: bool,
-    keep_going: bool = False,
-    min_agreement: int = 2,
-    workers: int = 8,
-    rate: float = 8.0,
-    by_cluster: int = 0,
-) -> None:
-    """Fill in genres and labels for artists nobody has asked about yet.
-
-    Three outcomes are held apart. A refusal is not a miss: an artist Deezer
-    would not answer for stays unasked, so the next run asks again instead of
-    recording that the artist has no genres.
-    """
-    enricher = DeezerEnricher(rate=rate)
-    asked = matched = missed = refused = 0
-    while True:
-        with store.connect(settings) as driver:
-            if by_cluster:
-                pending = query.artists_by_cluster_centrality(
-                    driver, settings.neo4j_database, by_cluster, limit
-                )
-            else:
-                pending = query.artists_needing_genres(
-                    driver, settings.neo4j_database, limit, external_only, min_agreement
-                )
-        if not pending:
-            break
-
-        typer.echo(f"asking Deezer about {len(pending)} artists at {rate:g}/s")
-        rows: list[dict] = []
-        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-            results = pool.map(lambda entry: _ask(enricher, entry["name"]), pending)
-            for artist, (kind, value) in zip(pending, results):
-                asked += 1
-                if kind == "failed":
-                    refused += 1
-                    continue
-                facts = value
-                if facts is None:
-                    missed += 1
-                    rows.append({"key": artist["key"], "styles": [], "labels": []})
-                else:
-                    matched += 1
-                    rows.append(
-                        {
-                            "key": artist["key"],
-                            "styles": list(facts.genres),
-                            "labels": list(facts.labels),
-                        }
-                    )
-                if len(rows) >= 300:
-                    with store.connect(settings) as driver:
-                        load.write_artist_genres(driver, settings.neo4j_database, rows)
-                    rows = []
-                    typer.echo(
-                        f"  asked {asked}, genres {matched}, no match {missed}, "
-                        f"refused {refused}",
-                        err=True,
-                    )
-        if rows:
-            with store.connect(settings) as driver:
-                load.write_artist_genres(driver, settings.neo4j_database, rows)
-        if refused:
-            typer.echo(
-                f"Deezer refused {refused} of {asked} requests. Those artists stay "
-                f"unasked and the next run retries them; lower --rate if this repeats.",
-                err=True,
-            )
-        if not keep_going:
-            break
-
-    typer.echo(
-        f"Deezer: asked {asked}, genres found {matched}, no match {missed}, "
-        f"refused {refused}"
-    )
 
 
 @app.command()
@@ -1044,7 +877,7 @@ def map_page(
         True, "--serve/--no-serve", help="Serve the page."
     ),
 ) -> None:
-    """Draw the taste graph as a bubble map, suggestions scoped to a cluster."""
+    """Draw the taste graph as a heat map, suggestions scoped to a region."""
     settings = _settings([])
     with store.connect(settings) as driver:
         database = settings.neo4j_database
