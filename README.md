@@ -42,6 +42,7 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 |---|---|
 | `discolab derive` | Rebuild artist edges, communities and islands on their own |
 | `discolab expand` | Ask Last.fm for artists similar to each cluster centre |
+| `discolab tags` | Fill in Last.fm's genre tags where no other source has one |
 | `discolab check` | Write one listening page, scoped by cluster or by source |
 | `discolab clusters --pages` | One index page and one frontier page per cluster |
 | `discolab map` | Draw the graph as a heat map, suggestions scoped to a region |
@@ -261,6 +262,10 @@ Genres are coarser than Discogs styles — `Electro`, `Techno/House`, `Dance` ra
 **Labels are a property, not a graph.** Affinity through labels measured at zero: 1,770 distinct labels across 406 artists, not one holding two of the same collection's artists. A collection of one release per small label cannot express signing affinity. The label name stays as one string on the page because it is the only curated human context there: `Ostgut Ton` says what Shed sounds like faster than any score.
 
 `enrich` walks the whole graph by default. `--min-agreement 2` restricts it to the artists two or more seeds agree on, which is the only subset that can reach a page.
+
+`discolab tags` fills the gap from the other side. Last.fm's top tags come from listeners rather than a catalogue, so they say `hardgroove`, `acidcore`, `industrial techno` where Deezer says `Electro`, and they exist for artists Deezer has never heard of — most of the graph. Unlike `expand`, which returns twenty artists per request, tags cost a request each: the walk covers twelve thousand artists in about fifty minutes, and resumes because every artist asked is marked.
+
+Only artists with no style are filled. Stacking two taxonomies on one artist makes a cluster's genre evidence say two things at once. Nationalities and platforms are dropped, by list and by the `-ese` and `-ish` endings most of them share, because they fold into no genre family and would only thicken Other.
 
 ## Known limits
 

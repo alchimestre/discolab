@@ -72,6 +72,31 @@ def write_artist_genres(driver: Driver, database: str, rows: list[dict]) -> int:
     return len(rows)
 
 
+def write_lastfm_tags(driver: Driver, database: str, rows: list[dict]) -> int:
+    """Attach Last.fm's tags where no genre source has described the artist.
+
+    Styles are filled rather than replaced. Two taxonomies on one artist make a
+    cluster's genre evidence say two things at once, and the count that decides a
+    family would then be counting a blend of them. `lastfm` records that the
+    artist was asked, so a later run does not ask again.
+    """
+    if not rows:
+        return 0
+    for chunk in _chunks(rows, BATCH_SIZE):
+        driver.execute_query(
+            """
+            UNWIND $rows AS row
+            MATCH (a:Artist {key: row.key})
+            SET a.styles = CASE WHEN size(coalesce(a.styles, [])) = 0
+                                THEN row.styles ELSE a.styles END,
+                a.lastfm = true
+            """,
+            rows=chunk,
+            database_=database,
+        )
+    return len(rows)
+
+
 def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach curated facts and their tags to tracks, then roll tags up to artists."""
     if not rows:

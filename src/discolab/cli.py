@@ -45,6 +45,7 @@ from .providers import (
     SpotifyProvider,
 )
 from .resolve import build_catalog, normalise
+from .tags import LastfmTagger, TagError
 
 app = typer.Typer(add_completion=False, help="Taste graph over local music metadata.")
 
@@ -961,6 +962,73 @@ def check(
         typer.echo("stopped")
     finally:
         server.shutdown()
+
+
+@app.command()
+def tags(
+    limit: int = typer.Option(
+        0, "--limit", help="Stop after this many artists. 0 walks the whole gap."
+    ),
+    rate: float = typer.Option(4.0, "--rate", help="Requests per second."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Ask, report, write nothing."),
+) -> None:
+    """Fill in Last.fm's genre tags where no genre source has one."""
+    settings = _settings([])
+    if not settings.lastfm_api_key:
+        typer.echo("set LASTFM_API_KEY in .env", err=True)
+        raise typer.Exit(code=2)
+
+    with store.connect(settings) as driver:
+        rows = driver.execute_query(
+            """
+            MATCH (a:Artist)
+            WHERE a.community IS NOT NULL AND a.community >= 0
+              AND size(coalesce(a.styles, [])) = 0
+              AND coalesce(a.lastfm, false) = false
+            RETURN a.key AS key, a.name AS name
+            ORDER BY coalesce(a.degree, 0) DESC, a.name
+            """,
+            database_=settings.neo4j_database,
+        ).records
+    if limit:
+        rows = rows[:limit]
+    if not rows:
+        typer.echo("nothing to ask about: every clustered artist has a style already")
+        return
+
+    tagger = LastfmTagger(settings.lastfm_api_key, rate)
+    typer.echo(f"asking Last.fm about {len(rows):,} artists", err=True)
+
+    pending: list[dict] = []
+    found = tagged = failed = 0
+    # Flushed as it goes. A run of twelve thousand requests held to the end shows
+    # an unchanged graph for an hour and loses everything if it stops.
+    with store.connect(settings) as driver:
+        for position, row in enumerate(rows, start=1):
+            try:
+                names = tagger.tags(row["name"])
+            except TagError as error:
+                failed += 1
+                if failed <= 3:
+                    typer.echo(f"  {error}", err=True)
+                names = []
+            found += 1
+            if names:
+                tagged += 1
+                pending.append({"key": row["key"], "styles": names})
+            if len(pending) >= 200:
+                if not dry_run:
+                    load.write_lastfm_tags(driver, settings.neo4j_database, pending)
+                pending = []
+            if position % 500 == 0:
+                typer.echo(f"  {position}/{len(rows)} · {tagged} with tags", err=True)
+        if pending and not dry_run:
+            load.write_lastfm_tags(driver, settings.neo4j_database, pending)
+
+    typer.echo(
+        f"asked {found:,} · {tagged:,} had genre tags · {failed:,} failed"
+        + (" (dry run, nothing written)" if dry_run else "")
+    )
 
 
 @app.command("map")
