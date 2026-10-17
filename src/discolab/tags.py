@@ -50,7 +50,10 @@ NON_GENRE = frozenset(
         "bandcamp", "soundcloud", "spotify", "yandex music", "youtube",
         "seen live", "favorites", "favourite", "favourites", "loved",
         "under 2000 listeners", "female vocalists", "male vocalists",
-        "chill", "meditation", "relaxing", "sleep", "study",
+        "chill", "meditation", "relaxing", "sleep", "study", "instrumental",
+        "50s", "60s", "70s", "80s", "90s", "00s", "10s",
+        "egypt", "lebanon", "mali", "morocco", "cambodia", "cambodian",
+        "greek", "hindi", "syria", "iraq", "iran", "algeria", "tunisia",
     }
 )
 

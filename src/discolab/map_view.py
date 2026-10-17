@@ -1,12 +1,12 @@
-"""A bubble map of the taste graph, with suggestions scoped to a cluster.
+"""A heat map of the taste graph, with suggestions scoped to a region.
 
 Answers one question: where is my taste dense, and which areas touch each other.
-Bubbles are communities, sized by how many artists they hold and placed so that
-communities sharing artists settle near one another. Clicking one scopes the
-suggestions beside it.
+Regions are communities, their glow sized by how many artists they hold and
+placed so that communities sharing artists settle near one another. Clicking one
+scopes the suggestions beside it.
 
-Rendered as one file with no network use beyond the YouTube embeds the panel
-optionally carries, so the page works from the local server the same way.
+Rendered as one file. A region is named by the rekordbox tag its artists share,
+where they share one, and is otherwise left unnamed.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import html
 import json
 import math
 import random
+import re
 from dataclasses import dataclass, field
 
 WIDTH = 1000.0
@@ -68,26 +69,54 @@ FAMILY_EXACT = {
     "opéra": "Classical",
 }
 
-FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Hip hop & Soul", ("rap", "hip hop", "r&b", "rnb", "soul", "funk", "grime",
-                        "dancehall", "ragga")),
-    ("Classical", ("classique", "baroque", "opéra", "renaissance", "médiéval")),
-    ("Soundtrack", ("films", "bandes originales", "jeux vidéo", "comédie",
-                    "livres audio")),
-    ("Jazz & Blues", ("jazz", "blues")),
-    ("Pop", ("pop", "variété", "chanson", "jeunesse", "comptines")),
-    ("Electronic", ("electro", "techno", "house", "dance", "trance", "disco",
-                    "dubstep", "club", "edm", "dub", "hardgroove", "acidcore",
-                    "schranz", "idm", "breakbeat", "jungle", "ambient", "ebm",
-                    "synth", "wave", "psytrance", "hardstyle", "rave", "gabber",
-                    "dnb", "drum and bass")),
-    ("Rock", ("rock", "metal", "alternative", "indie", "indé", "punk")),
-    ("Folk & World", ("folk", "country", "singer", "latino", "africaine", "arabe",
-                      "indienne", "brésilienne", "bollywood", "reggae", "world",
-                      "maghreb", "mashriq", "anatolia", "levant", "occitan",
-                      "sub-saharan", "sahel", "andes", "balkans", "cajun",
-                      "lament", "lullaby", "balearic", "tuareg", "gnawa", "sufi",
-                      "qawwali", "rai", "desert blues")),
+# Matching is on whole words. A substring test reads "rai" inside "rain" and
+# "ost" inside "post-rock", which put field recordings in Folk & World and
+# post-rock in Soundtrack.
+_SEPARATORS = re.compile(r"[^\w&']+")
+
+
+def _phrase(text: str) -> str:
+    return " " + _SEPARATORS.sub(" ", text.casefold().strip()) + " "
+
+
+FAMILY_RULES = tuple(
+    (family, tuple(_phrase(needle) for needle in needles))
+    for family, needles in (
+        ("Hip hop & Soul", ("rap", "hip hop", "hip-hop", "hiphop", "r&b", "rnb",
+                            "soul", "funk", "grime", "drill", "trap", "boom bap",
+                            "dancehall", "ragga", "g-funk", "neo soul")),
+        ("Classical", ("classique", "classical", "baroque", "opéra", "opera",
+                       "renaissance", "médiéval", "medieval", "early music",
+                       "chamber", "orchestral", "carnatic", "hindustani")),
+        ("Soundtrack", ("films", "bandes originales", "jeux vidéo", "comédie",
+                        "livres audio", "soundtrack", "score", "video game", "ost")),
+        ("Jazz & Blues", ("jazz", "blues", "bossa", "bebop", "swing", "ragtime")),
+        # Before Pop and Electronic: "arabic pop" is a world record, not a chart
+        # one, and the specific family has to be asked first to say so.
+        ("Folk & World", ("folk", "country", "singer", "latino", "africaine",
+                          "african", "arabe", "arabic", "indienne", "brésilienne",
+                          "bollywood", "reggae", "world", "maghreb", "mashriq",
+                          "anatolia", "levant", "occitan", "sub-saharan", "sahel",
+                          "andes", "balkans", "cajun", "lament", "lullaby",
+                          "balearic", "tuareg", "gnawa", "sufi", "qawwali", "rai",
+                          "desert blues", "celtic", "greek", "flamenco",
+                          "reggaeton", "oriental", "andalusian", "morna")),
+        ("Pop", ("pop", "variété", "chanson", "jeunesse", "comptines",
+                 "singer-songwriter")),
+        ("Electronic", ("electro", "techno", "house", "dance", "trance", "disco",
+                        "dubstep", "club", "edm", "dub", "hardgroove", "acidcore",
+                        "schranz", "idm", "breakbeat", "jungle", "ambient", "ebm",
+                        "synth", "wave", "psytrance", "hardstyle", "rave", "gabber",
+                        "dnb", "drum and bass", "minimal", "chillout", "downtempo",
+                        "trip-hop", "trip hop", "industrial", "glitch", "drone",
+                        "dark ambient", "bass music", "garage")),
+        ("Rock", ("rock", "metal", "alternative", "indie", "indé", "punk",
+                  "psychedelic", "shoegaze", "grunge", "stoner", "sludge", "doom",
+                  "krautrock", "post-rock", "hardcore", "emo", "screamo",
+                  "gothic")),
+        ("Experimental", ("experimental", "avant-garde", "avant garde", "free jazz",
+                          "noise", "musique concrète", "electroacoustic")),
+    )
 )
 
 FAMILY_COLOUR = {
@@ -99,6 +128,7 @@ FAMILY_COLOUR = {
     "Classical": "#b18cff",
     "Folk & World": "#3fc47c",
     "Soundtrack": "#3fc0d8",
+    "Experimental": "#a3a3f5",
     "Other": "#9aa0aa",
 }
 
@@ -108,8 +138,9 @@ def family_of(genre: str) -> str:
     key = genre.casefold().strip()
     if key in FAMILY_EXACT:
         return FAMILY_EXACT[key]
+    words = _phrase(genre)
     for family, needles in FAMILY_RULES:
-        if any(needle in key for needle in needles):
+        if any(needle in words for needle in needles):
             return family
     return "Other"
 
@@ -141,8 +172,16 @@ class Cluster:
 
     @property
     def family(self) -> str:
-        found = self.families
-        return found[0][0] if found else "Other"
+        """The heaviest family that names a sound.
+
+        Unknown labels are counted with the rest, and on Last.fm's long tail they
+        outnumber any one genre: eight clusters were tinting grey while holding
+        hundreds of techno and house mentions between them.
+        """
+        for name, _ in self.families:
+            if name != "Other":
+                return name
+        return "Other"
 
     @property
     def colour(self) -> str:
