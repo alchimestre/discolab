@@ -154,6 +154,7 @@ class Cluster:
     genres: tuple[tuple[str, int], ...] = ()
     tags: tuple[tuple[str, int], ...] = ()
     labels: tuple[tuple[str, int], ...] = ()
+    artists: tuple[str, ...] = ()
     x: float = 0.0
     y: float = 0.0
     r: float = 0.0
@@ -303,6 +304,59 @@ def _colour(family: str) -> str:
     return FAMILY_COLOUR.get(family, FAMILY_COLOUR["Other"])
 
 
+# How many of a cluster's artists the map can name, once zoomed.
+ARTIST_LABELS = 24
+GOLDEN = math.pi * (3 - math.sqrt(5))
+
+
+def _spread_order(count: int) -> list[int]:
+    """An ordering whose every prefix is spread over the disc.
+
+    Names arrive a tier at a time, so the first four have to cover the disc as
+    well as the first twenty-four do. Reversing the bits of each index does that
+    without a packing pass.
+    """
+    bits = max(1, (count - 1).bit_length())
+
+    def reversed_bits(index: int) -> int:
+        out = 0
+        for _ in range(bits):
+            out = (out << 1) | (index & 1)
+            index >>= 1
+        return out
+
+    return sorted(range(count), key=reversed_bits)
+
+
+def _artist_marks(cluster: Cluster) -> list[dict]:
+    """Where each named artist of a cluster sits, and how strongly it ranks.
+
+    A spiral inside the hot core spreads them without a packing pass, and the
+    golden angle keeps neighbours from lining up as more of them appear. The rank
+    is the position in an order whose prefixes stay spread, so raising the tier
+    fills the disc rather than deepening its middle.
+    """
+    names = cluster.artists[:ARTIST_LABELS]
+    if not names:
+        return []
+    span = max(1, len(names) - 1)
+    marks = []
+    for index, name in enumerate(names):
+        radius = cluster.r * (0.28 + 0.64 * (index / span))
+        angle = index * GOLDEN
+        marks.append(
+            {
+                "name": name,
+                "rank": 0,
+                "x": cluster.x + math.cos(angle) * radius,
+                "y": cluster.y + math.sin(angle) * radius,
+            }
+        )
+    for rank, position in enumerate(_spread_order(len(marks))):
+        marks[position]["rank"] = rank
+    return marks
+
+
 def _heatmap_svg(clusters: list[Cluster]) -> str:
     """Draw the taste as a heat field: density, no outlines, no names at rest.
 
@@ -328,6 +382,7 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
 
     heat: list[str] = []
     areas: list[str] = []
+    marks: list[str] = []
     hits: list[str] = []
     for cluster in clusters:
         family = cluster.family
@@ -347,6 +402,16 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
                 f'x="{cluster.x:.1f}" y="{cluster.y:.1f}" '
                 f'text-anchor="middle" dominant-baseline="central">'
                 f"{html.escape(cluster.sub_genre)}</text>"
+            )
+        # Artists arrive with the zoom, a tier at a time. At rest the area's own
+        # tag is the only name it carries.
+        for mark in _artist_marks(cluster):
+            marks.append(
+                f'<text class="artist" data-key="{cluster.key}" '
+                f'data-rank="{mark["rank"]}" data-size="{cluster.size}" '
+                f'x="{mark["x"]:.1f}" y="{mark["y"]:.1f}" '
+                f'text-anchor="middle" dominant-baseline="central">'
+                f"{html.escape(mark['name'])}</text>"
             )
         hits.append(
             f'<circle class="hit" data-key="{cluster.key}" tabindex="0" '
@@ -370,6 +435,7 @@ def _heatmap_svg(clusters: list[Cluster]) -> str:
         f"<defs>{defs}</defs>"
         f'<g id="heat">{"".join(heat)}</g>'
         f'<g id="areas">{"".join(areas)}</g>'
+        f'<g id="artists">{"".join(marks)}</g>'
         f'<g id="hits">{"".join(hits)}</g>'
         f"</svg>"
     )
@@ -438,6 +504,9 @@ PAGE = """<!doctype html>
   .area { fill: var(--ink); opacity: .92; pointer-events: none;
           font-size: var(--area-label, 12px);
           paint-order: stroke; stroke: Canvas; stroke-width: .28em; }
+  .artist { fill: var(--ink); opacity: .88; pointer-events: none; display: none;
+            font-size: var(--area-label, 12px);
+            paint-order: stroke; stroke: Canvas; stroke-width: .24em; }
   #hint { position: absolute; left: 18px; bottom: 14px; font-size: 12px;
           color: var(--quiet); pointer-events: none; }
   aside { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 40px; }
@@ -525,6 +594,7 @@ for (const candidate of DATA.candidates) {
 const heats = [...document.querySelectorAll('.heat')];
 const hits = [...document.querySelectorAll('.hit')];
 const areas = [...document.querySelectorAll('.area')];
+const artists = [...document.querySelectorAll('.artist')];
 const scope = document.getElementById('scope');
 const tip = document.getElementById('tip');
 const picked = new Set();
@@ -750,33 +820,54 @@ let offset = { x: 0, y: 0 };
 let moved = 0;
 let drag = null;
 
-// A name goes on an area only where the area can hold it and no name already
-// placed is in the way. Twelve-pixel text needs a bit over half its size per
-// character; the text may run out to the glow rather than stopping at the core,
-// and the largest areas are placed first so the map's main shapes keep their
-// names as the smaller ones drop out.
+// A name goes on the map only where it fits and nothing already placed is in
+// the way. Twelve-pixel text needs a bit over half its size per character. At
+// rest an area is named by its tag; past a little zoom the artist names take
+// over, because at that depth the area is what you are inside rather than what
+// you are looking at.
 const AREA_CHAR = 0.58;
 const AREA_PX = 12;
 const AREA_H = 15;
 const AREA_ROOM = 1.5;
+const ARTIST_FROM = 2.2;
+const ARTIST_TIERS = [[2.2, 4], [4, 8], [8, 16], [14, 24]];
 const areaOrder = [...areas].sort((a, b) => Number(b.dataset.size) - Number(a.dataset.size));
-function revealAreas() {
+const artistOrder = [...artists].sort((a, b) =>
+  Number(b.dataset.size) - Number(a.dataset.size) ||
+  Number(a.dataset.rank) - Number(b.dataset.rank));
+
+function revealLabels() {
   const parts = svg.getAttribute('viewBox').trim().split(/[ ,]+/).map(Number);
   const scale = svg.clientWidth / Math.max(1, parts[2]);
   const placed = [];
-  for (const mark of areaOrder) {
-    const room = 2 * Number(mark.dataset.glow) * AREA_ROOM * scale;
-    const need = Number(mark.dataset.chars) * AREA_CHAR * AREA_PX;
-    if (room < need) { mark.style.display = 'none'; continue; }
+  const fits = (mark, need) => {
     const px = (Number(mark.getAttribute('x')) - parts[0]) * scale;
     const py = (Number(mark.getAttribute('y')) - parts[1]) * scale;
     const box = [px - need / 2, py - AREA_H / 2, px + need / 2, py + AREA_H / 2];
     if (placed.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) {
-      mark.style.display = 'none';
-      continue;
+      return false;
     }
     placed.push(box);
-    mark.style.display = 'inline';
+    return true;
+  };
+
+  if (zoom < ARTIST_FROM) {
+    for (const mark of artistOrder) mark.style.display = 'none';
+    for (const mark of areaOrder) {
+      const room = 2 * Number(mark.dataset.glow) * AREA_ROOM * scale;
+      const need = Number(mark.dataset.chars) * AREA_CHAR * AREA_PX;
+      mark.style.display = room >= need && fits(mark, need) ? 'inline' : 'none';
+    }
+    return;
+  }
+
+  for (const mark of areaOrder) mark.style.display = 'none';
+  let limit = ARTIST_TIERS[0][1];
+  for (const [at, count] of ARTIST_TIERS) if (zoom >= at) limit = count;
+  for (const mark of artistOrder) {
+    const need = mark.textContent.length * AREA_CHAR * AREA_PX;
+    mark.style.display = Number(mark.dataset.rank) < limit && fits(mark, need)
+      ? 'inline' : 'none';
   }
 }
 
@@ -788,7 +879,7 @@ function applyView() {
   // the same size on screen at any depth.
   svg.style.setProperty('--area-label',
     (AREA_PX * w / Math.max(1, svg.clientWidth)).toFixed(2) + 'px');
-  revealAreas();
+  revealLabels();
 }
 
 svg.addEventListener('wheel', event => {

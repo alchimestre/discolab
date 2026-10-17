@@ -30,6 +30,7 @@ from .config import Settings, load_env_file
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
 from .map_view import Cluster
+from .map_view import ARTIST_LABELS
 from .map_view import layout as layout_clusters
 from .map_view import radius_for
 from .map_view import render_page
@@ -893,6 +894,15 @@ def map_page(
             """,
             database_=database,
         ).records
+        named = driver.execute_query(
+            """
+            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
+            RETURN a.community AS key, a.name AS name,
+                   coalesce(a.external, false) AS external,
+                   coalesce(a.degree, 0) AS degree
+            """,
+            database_=database,
+        ).records
         own_tags = driver.execute_query(
             """
             MATCH (a:Artist)-[:TAGGED]->(g:Tag)
@@ -975,6 +985,15 @@ def map_page(
         labels_here.setdefault(row["key"], {})
         labels_here[row["key"]][row["name"]] = labels_here[row["key"]].get(row["name"], 0) + row["n"]
 
+    # Your own artists first, then the most connected. The rank decides which
+    # names survive the zoom tiers, so those that appear first are the ones the
+    # region is built around.
+    own: dict[int, list[tuple[int, int, str]]] = {}
+    for row in named:
+        own.setdefault(row["key"], []).append(
+            (1 if row["external"] else 0, -row["degree"], row["name"])
+        )
+
     clusters = [
         Cluster(
             key=row["key"],
@@ -998,6 +1017,9 @@ def map_page(
                     labels_here.get(row["key"], {}).items(),
                     key=lambda item: (-item[1], item[0]),
                 )[:10]
+            ),
+            artists=tuple(
+                name for _, _, name in sorted(own.get(row["key"], []))[:ARTIST_LABELS]
             ),
         )
         for row in sizes
