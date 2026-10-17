@@ -141,7 +141,8 @@ def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
             UNWIND $rows AS row
             MERGE (e:Artist {key: row.key})
             SET e.name = coalesce(e.name, row.name),
-                e.external = coalesce(e.external, row.external)
+                e.external = coalesce(e.external, row.external),
+                e.url = coalesce(row.url, e.url)
             WITH e, row
             MATCH (s:Artist {key: row.seed_key})
             MERGE (s)-[r:SIMILAR_TO]->(e)

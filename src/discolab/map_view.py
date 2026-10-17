@@ -429,6 +429,8 @@ PAGE = """<!doctype html>
   .labels b { color: var(--quiet); font-weight: 500; }
   ol.suggestions li { padding: 9px 0; border-top: 1px solid var(--line); }
   ol.suggestions .name { font-weight: 600; }
+  ol.suggestions .name a { color: inherit; text-decoration: none; }
+  ol.suggestions .name a:hover { text-decoration: underline; }
   ol.suggestions .why { font-size: 12px; color: var(--quiet); }
   ol.suggestions .tags { font-size: 11px; color: var(--quiet); }
   .empty { font-size: 13px; color: var(--quiet); }
@@ -491,6 +493,14 @@ document.getElementById('stat').textContent =
 function esc(s) { return String(s).replace(/[&<>"]/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
+// A captured URL is used when expansion recorded one; otherwise the page is
+// built from the artist's name. Last.fm keeps an artist at its own name, so the
+// rebuild matches the URL its API returns, and a name it has never seen lands on
+// its own "not found" page rather than a dead link.
+function lastfm(name) {
+  return 'https://www.last.fm/music/' + encodeURIComponent(name).replace(/%20/g, '+');
+}
+
 function emphasise() {
   const only = picked.size === 1 ? [...picked][0] : null;
   const partners = only === null ? null : (neighbours.get(only) || new Map());
@@ -519,6 +529,7 @@ function selectedCandidates() {
     return DATA.candidates
       .map(c => ({
         name: c.name,
+        url: c.url,
         styles: c.styles,
         hits: Object.keys(c.clusters).map(Number),
         pointers: Object.values(c.clusters).reduce((a, b) => a + b, 0),
@@ -538,6 +549,7 @@ function selectedCandidates() {
     for (const key of hits) pointers += candidate.clusters[String(key)] || 0;
     rows.push({
       name: candidate.name,
+      url: candidate.url,
       styles: candidate.styles,
       hits: hits,
       pointers: pointers,
@@ -625,7 +637,8 @@ function renderPanel() {
     const where = s.hits.length > 1
       ? ' across ' + s.hits.length + ' of your regions'
       : ' from one region';
-    return '<li><div class="name">' + esc(s.name) + '</div>' +
+    return '<li><div class="name"><a href="' + (s.url || lastfm(s.name)) + '" ' +
+      'target="_blank" rel="noopener">' + esc(s.name) + '</a></div>' +
       '<div class="why">' + s.pointers + ' pointing artists' + where +
       '</div>' + (tags ? '<div class="tags">' + tags + '</div>' : '') + '</li>';
   };

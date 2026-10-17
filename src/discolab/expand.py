@@ -29,6 +29,7 @@ class Suggestion:
     seed: str
     name: str
     score: float
+    url: str = ""
 
 
 class LastfmSimilarExpander:
@@ -81,6 +82,10 @@ class LastfmSimilarExpander:
                 seed=artist,
                 name=item.get("name", ""),
                 score=float(item.get("match", 0.0) or 0.0),
+                # Last.fm hands back the page it keeps for the artist, so the
+                # link is whatever it pointed at rather than a name rebuilt
+                # into a URL later.
+                url=item.get("url") or "",
             )
             for item in found
             if item.get("name")

@@ -417,6 +417,7 @@ def expand(
                         "seed_key": seed["key"],
                         "seed": seed["name"],
                         "score": suggestion.score,
+                        "url": suggestion.url or None,
                         "source": expander.source,
                         "external": not corpus,
                     }
@@ -1023,6 +1024,7 @@ def map_page(
             RETURN ext.key AS key, ext.name AS name,
                    coalesce(ext.styles, []) AS styles,
                    coalesce(ext.labels, []) AS labels,
+                   coalesce(ext.url, '') AS url,
                    cluster, agreement
             """,
             database_=database,
@@ -1055,6 +1057,7 @@ def map_page(
             row["key"],
             {
                 "name": row["name"],
+                "url": row["url"],
                 "styles": list(row["styles"]),
                 "labels": list(row["labels"]),
                 "clusters": {},
