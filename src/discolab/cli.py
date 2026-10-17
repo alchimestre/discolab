@@ -848,7 +848,10 @@ def tags(
             found += 1
             if names:
                 tagged += 1
-                pending.append({"key": row["key"], "styles": names})
+            # Every artist asked is written, even with nothing to attach. The
+            # writer marks them, and an artist left unmarked is asked again on
+            # every later run, forever, because nothing about it changed.
+            pending.append({"key": row["key"], "styles": names})
             if len(pending) >= 200:
                 if not dry_run:
                     load.write_lastfm_tags(driver, settings.neo4j_database, pending)

@@ -48,7 +48,7 @@ def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
     )
 
 
-def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
+def write_lastfm_tags(driver: Driver, database: str, rows: list[dict]) -> int:
     """Attach Last.fm's tags where no genre source has described the artist.
 
     Styles are filled rather than replaced. Two taxonomies on one artist make a
