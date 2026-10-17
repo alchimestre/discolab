@@ -278,6 +278,18 @@ def layout(clusters: list[Cluster], edges: list[tuple[int, int, int]]) -> None:
             break
 
 
+# How a label earns the right to stand for a cluster. It has to appear on at
+# least this many artists, and cover this much of what the cluster carries. Tags
+# are held to a lower bar than fetched genres: a tag is the owner's own
+# classification of a sub-scene, where a fetched genre covering a tenth is noise.
+MIN_MENTIONS = 3
+GENRE_FLOOR = 0.20
+TAG_FLOOR = 0.10
+# How deep the fallback reaches into a cluster's labels before giving up and
+# leaving the cluster a number.
+FALLBACK_LABELS = 14
+
+
 def assign_names(clusters: list[Cluster]) -> None:
     """Give every cluster a name of its own, that also describes it.
 
@@ -287,10 +299,12 @@ def assign_names(clusters: list[Cluster]) -> None:
     an electronic cluster Musique arabe. A name has to be both: present enough to
     describe the cluster, and over-represented enough to tell it from the others.
 
-    So a label must hold at least eight per cent of the cluster before it can
-    name it, and the score multiplies that share by how much the cluster leans on
-    it. Collisions fall through to the runner-up, then to the pair, until every
-    name is unique.
+    So a fetched genre has to hold GENRE_FLOOR of what the cluster carries, and
+    appear on MIN_MENTIONS of its artists, before it can name it; the owner's own
+    tags are held to TAG_FLOOR. The score multiplies that share by how much the
+    cluster leans on it. Collisions fall through to the runner-up, then to the
+    pair, then to a label marked as not describing the cluster, until every name
+    is unique. A cluster with nothing above those floors is left a number.
     """
     counts: dict[str, int] = {}
     for cluster in clusters:
@@ -310,7 +324,7 @@ def assign_names(clusters: list[Cluster]) -> None:
             # A fifth is the floor. Below it the name describes a minority and the
             # reader takes it for the whole: Rap/Hip Hop naming a cluster that is
             # eleven per cent rap, recommending electro.
-            if count < 3 or share < 0.20:
+            if count < MIN_MENTIONS or share < GENRE_FLOOR:
                 continue
             scored.append((share * (share / (counts[name] / overall)), name))
         scored.sort(key=lambda item: (-item[0], item[1]))
@@ -323,7 +337,7 @@ def assign_names(clusters: list[Cluster]) -> None:
             tagged = [
                 (count / cluster.size, name)
                 for name, count in cluster.tags
-                if count >= 3 and count / cluster.size >= 0.10
+                if count >= MIN_MENTIONS and count / cluster.size >= TAG_FLOOR
             ]
             tagged.sort(key=lambda item: (-item[0], item[1]))
             singles = [name for _, name in tagged]
@@ -342,17 +356,16 @@ def assign_names(clusters: list[Cluster]) -> None:
             for i, first in enumerate(singles[1:], start=1):
                 for second in singles[i + 1:]:
                     options.append((f"{first} & {second}", first))
-        if not singles:
-            # Nothing here describes a fifth of the cluster, so it has no name of
-            # its own. Say that, and name its largest labels, which keeps it
-            # distinct without claiming any of them covers the cluster.
-            for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:14]:
-                options.append((f"mixed · {name}", name))
-        # Before falling back to a number: the name the cluster would have had if
-        # the stronger ones were free, marked as not describing it. A number tells
-        # the reader nothing at all, and eleven clusters were reaching that.
-        for name, _ in sorted(cluster.pool, key=lambda item: (-item[1], item[0]))[:14]:
+        # Before falling back to a number: the labels the cluster does carry,
+        # marked as not describing it. A number tells the reader nothing at all.
+        # The count floor holds here too, or a cluster of four hundred artists
+        # gets named for a label two of them carry.
+        fallbacks = 0
+        for name, count in sorted(cluster.pool, key=lambda item: (-item[1], item[0])):
+            if count < MIN_MENTIONS or fallbacks >= FALLBACK_LABELS:
+                break
             options.append((f"mixed · {name}", name))
+            fallbacks += 1
         options.append((f"cluster {cluster.key}", cluster.family))
         cluster.options = options
 
