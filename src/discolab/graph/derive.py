@@ -5,6 +5,9 @@ from neo4j import Driver
 
 DEFAULT_RESOLUTION = 1.0
 RANDOM_SEED = 42
+# Coarser than the cluster resolution: at 1.0 one genre splits into several
+# areas, and its own fragments then "agree" as if they were distinct tastes.
+AREA_RESOLUTION = 0.3
 
 
 def build_collaboration_edges(driver: Driver, database: str) -> int:
@@ -151,3 +154,42 @@ def assign_communities(
         "largest_component": len(components[0]),
         "bridging_artists": sum(1 for value in betweenness.values() if value > 0),
     }
+
+
+def assign_areas(driver: Driver, database: str, resolution: float = AREA_RESOLUTION) -> int:
+    """Louvain over the user's own artists only, written as `Artist.area`.
+
+    Communities include expansion artists, and one that links two areas pulls
+    them into a single community, which erases the intersection being ranked.
+    """
+    driver.execute_query("MATCH (a:Artist) SET a.area = -1", database_=database)
+    records = driver.execute_query(
+        """
+        MATCH (a:Artist)-[r:SIMILAR_TO|COLLABORATES]-(b:Artist)
+        WHERE a.key < b.key
+          AND coalesce(a.external, false) = false AND coalesce(b.external, false) = false
+        RETURN a.key AS source, b.key AS target,
+               sum(CASE WHEN type(r) = 'COLLABORATES' THEN 2.0
+                        ELSE coalesce(r.score, 1) END) AS weight
+        """,
+        database_=database,
+    ).records
+    graph = nx.Graph()
+    for record in records:
+        graph.add_edge(record["source"], record["target"], weight=record["weight"])
+    if graph.number_of_nodes() == 0:
+        return 0
+    areas = nx.community.louvain_communities(
+        graph, weight="weight", resolution=resolution, seed=RANDOM_SEED
+    )
+    rows = [
+        {"key": key, "area": index}
+        for index, members in enumerate(sorted(areas, key=len, reverse=True))
+        for key in members
+    ]
+    driver.execute_query(
+        "UNWIND $rows AS row MATCH (a:Artist {key: row.key}) SET a.area = row.area",
+        rows=rows,
+        database_=database,
+    )
+    return len(areas)

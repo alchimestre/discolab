@@ -311,13 +311,17 @@ def external_candidates(
     driver: Driver,
     database: str,
     limit: int = 25,
-    min_areas: int = 0,
+    min_areas: int = 2,
+    min_area_seeds: int = 5,
 ) -> list[dict]:
-    """Artists from outside the corpus, ranked by how many seeds agree on them.
+    """Artists from outside the corpus, ranked by the weaker of their two best areas.
 
-    One seed suggesting an artist says almost nothing, which is the bulk of a
-    similarity list. Several seeds agreeing says more, and seeds sitting in
-    different communities of the graph agreeing says most.
+    An area votes for an artist when at least two of its seeds name it, and its
+    support is the share of the area's seeds that do. Ranking by the
+    second-best support rewards an artist two separate tastes both lead to;
+    ranking by seed count rewards the centre of the largest area. Areas with
+    fewer than `min_area_seeds` seeds are ignored, since two seeds out of two
+    is a full vote from almost nothing.
 
     There is no genre predicate. Narrowing happens by scoping to a cluster, so
     the graph stays complete and the filter is a choice about where to look
@@ -325,21 +329,27 @@ def external_candidates(
     """
     records = driver.execute_query(
         """
-        MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
+        MATCH (s:Artist)-[:SIMILAR_TO]->()
+        WHERE s.area >= 0
+        WITH s.area AS area, count(DISTINCT s) AS area_seeds
+        WHERE area_seeds >= $min_area_seeds
+        MATCH (s:Artist {area: area})-[:SIMILAR_TO]->(e:Artist)
         WHERE coalesce(e.external, false) = true
-        WITH e,
-             count(DISTINCT s) AS seed_count,
-             count(DISTINCT s.community) AS areas,
-             avg(r.score) AS mean_score,
-             max(r.score) AS best_score,
-             collect(DISTINCT s.name)[0..4] AS seed_names
+        WITH e, area, area_seeds, count(DISTINCT s) AS votes,
+             collect(DISTINCT s.name)[0..2] AS names
+        WHERE votes >= 2
+        WITH e, toFloat(votes) / area_seeds AS support, votes, names
+        ORDER BY support DESC
+        WITH e, collect(support) AS supports, collect(names) AS names,
+             sum(votes) AS seed_count, count(*) AS areas
         WHERE areas >= $min_areas
         RETURN e.key AS key, e.name AS name, seed_count, areas,
-               mean_score, best_score, seed_names
-        ORDER BY seed_count DESC, areas DESC, mean_score DESC
+               supports[1] AS balance, names[0] + names[1] AS seed_names
+        ORDER BY balance DESC, seed_count DESC, key
         LIMIT $limit
         """,
-        min_areas=min_areas,
+        min_areas=max(2, min_areas),
+        min_area_seeds=min_area_seeds,
         limit=limit,
         database_=database,
     ).records

@@ -230,6 +230,7 @@ def derive_edges(
         containers = derive.build_container_edges(driver, database, min_artists, max_artists)
         summary = derive.assign_communities(driver, database, resolution)
         reconnected = derive.reconnect_isolated(driver, database)
+        areas = derive.assign_areas(driver, database)
 
     typer.echo(f"credit edges: {credits}, container edges: {containers}")
     typer.echo(
@@ -241,6 +242,7 @@ def derive_edges(
         f"bridging artists: {summary['bridging_artists']}"
     )
     typer.echo(f"artists given a cluster from their similar artists: {reconnected}")
+    typer.echo(f"taste areas over your own artists: {areas}")
 
 
 @app.command()
@@ -345,7 +347,7 @@ def guess(
         cache=Path("out/videos.json"),
         refresh=False,
         source="external",
-        min_areas=3,
+        min_areas=2,
         cluster=-1,
         periphery=False,
         serve=serve,
@@ -678,11 +680,11 @@ def check(
         help="bridge ranks your own artists; external lists artists you do not have.",
     ),
     min_areas: int = typer.Option(
-        3,
+        2,
         "--min-areas",
-        help="Require this many separate taste areas to agree. 2 lets a tight group "
-        "of seeds that share nothing else put its own candidates on the page; "
-        "measured, 3 removes them and 4 changes nothing further.",
+        min=2,
+        help="Require this many taste areas, each with at least two seeds naming the "
+        "artist. Ranking is by the weaker area's share of its seeds.",
     ),
     cluster: int = typer.Option(
         -1,
