@@ -330,9 +330,9 @@ def holds_track(
     title_key = normalise(video.title)
     if not title_key:
         return False
-    if any(key and key in title_key for key in (normalise(t) for t, _ in known_titles)):
+    if any(_contains_title(title_key, normalise(title)) for title, _ in known_titles):
         return True
-    return any(key in title_key for key in keys)
+    return any(_contains_title(title_key, key) for key in keys)
 
 
 def track_plays(video: Video, known_titles: Sequence[tuple[str, int]]) -> int:
@@ -343,9 +343,23 @@ def track_plays(video: Video, known_titles: Sequence[tuple[str, int]]) -> int:
     best = 0
     for title, plays in known_titles:
         key = normalise(title)
-        if key and key in title_key:
+        if _contains_title(title_key, key):
             best = max(best, plays)
     return best
+
+
+def _contains_title(video_key: str, track_key: str) -> bool:
+    if not track_key:
+        return False
+    start = video_key.find(track_key)
+    while start != -1:
+        end = start + len(track_key)
+        starts_word = start == 0 or not video_key[start - 1].isalnum()
+        ends_word = end == len(video_key) or not video_key[end].isalnum()
+        if starts_word and ends_word:
+            return True
+        start = video_key.find(track_key, start + 1)
+    return False
 
 
 def tag_for(

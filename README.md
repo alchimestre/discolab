@@ -108,7 +108,7 @@ Each section embeds one official track. Candidates are found by searching the ar
 | A verified channel only when the title opens with the artist's name, and only when the artist has no channel of their own | Verified businesses re-upload anything |
 | Many uploads per artist, ranked by channel trust then by whether the library holds the track | Uploaders can block embedding, so the page needs somewhere to go next |
 
-Each embed is tagged `new` or `already held`, matched by title against the tracks in the library. The tag updates if the page moves to another upload.
+Each embed is tagged `new`, `played`, or `already held`. Track titles match whole words in the video title after normalisation. Whole-library matches still require at least 12 normalised characters. The tag updates when the page moves to another upload.
 
 The header reports how many embeds are tracks you already hold, since those test recognition rather than discovery.
 
