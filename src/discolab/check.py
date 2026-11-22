@@ -150,7 +150,7 @@ def resolve_artist(
             title_key = normalise(video.title)
             # A track the library already holds proves nothing when the point is
             # to test whether the graph surfaces something new, so it ranks last.
-            fresh = 1 if any(key in title_key for key in owned_keys) else 0
+            fresh = 1 if any(_contains_title(title_key, key) for key in owned_keys) else 0
             found[video.video_id] = (rank, fresh, order, video)
 
     ranked = sorted(found.values(), key=lambda item: (item[0], item[1], item[2]))
@@ -652,7 +652,7 @@ def _section(
 # keeps serving videos the current rules would reject: the substring match
 # that let CANAL+ Sport Afrique rank as the band Can lived on in the cache
 # long after the rule was fixed.
-RESOLVER_VERSION = 2
+RESOLVER_VERSION = 3
 
 
 def load_video_cache(path: Path) -> dict[str, list[Video]]:

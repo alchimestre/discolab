@@ -1,6 +1,6 @@
 import pytest
 
-from discolab.check import Video, library_keys, tag_for, track_plays
+from discolab.check import Video, library_keys, resolve_artist, tag_for, track_plays
 
 
 @pytest.mark.parametrize(
@@ -25,3 +25,12 @@ def test_embed_badge_requires_whole_title_words(
 def test_play_count_ignores_partial_words() -> None:
     video = Video("video", "Artist - Good (Live)")
     assert track_plays(video, [("Go", 9), ("Good", 3)]) == 3
+
+
+def test_resolve_artist_prefers_new_upload_at_same_trust_rank(monkeypatch) -> None:
+    videos = [
+        Video("held", "Artist - Go", "Artist - Topic"),
+        Video("new", "Artist - Good", "Artist - Topic"),
+    ]
+    monkeypatch.setattr("discolab.check.search_videos", lambda _: videos)
+    assert resolve_artist("Artist", ["Go"], limit=1) == [videos[1]]
