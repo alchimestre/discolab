@@ -5,5 +5,6 @@ __pycache__/
 .env
 .scratch/
 out/
+/graphify-out/
 certs/
 .DS_Store
