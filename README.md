@@ -7,18 +7,15 @@ Three sources are aggregated into one graph: the audio files on disk, Last.fm sc
 ## Requirements
 
 - Python 3.11 or newer, and `uv`
-- A container runtime for Neo4j: Docker or OrbStack
+- No service to run: the graph is one SQLite file, `out/discolab.db`
 - `sqlcipher`, for the rekordbox step: `brew install sqlcipher`. Without it that step is skipped and every other source still runs.
 
 ## Setup
 
 1. `uv sync`
 2. `cp .env.example .env`, then set `DISCOLAB_LIBRARY_ROOTS` to your music folders separated by `:`
-3. `docker compose up -d`
-4. `uv run discolab spotify-login`, once, if you want Spotify in the graph
-5. `uv run discolab ingest`
-
-Neo4j Browser is at `http://localhost:7474`.
+3. `uv run discolab spotify-login`, once, if you want Spotify in the graph
+4. `uv run discolab ingest`
 
 ## The loop
 
@@ -48,7 +45,7 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 | `discolab map` | Draw the graph as a heat map, suggestions scoped to a region |
 | `discolab stats` | Node, edge and island counts |
 | `discolab prune` | Drop unplayed tracks and the artists left with none |
-| `discolab reset --yes` | Delete every node and relationship |
+| `discolab reset --yes` | Empty the database |
 | `discolab spotify-login` | Authorise against Spotify once, caching the refresh token |
 
 ## What rekordbox adds
@@ -125,10 +122,7 @@ Resolving the embeds is the only step that touches the network, and `--no-youtub
 | Variable | Default | Meaning |
 |---|---|---|
 | `DISCOLAB_LIBRARY_ROOTS` | none | Library folders, separated by the OS path separator |
-| `NEO4J_URI` | `bolt://localhost:7687` | Bolt endpoint |
-| `NEO4J_USER` | `neo4j` | |
-| `NEO4J_PASSWORD` | `discolab-dev` | Change this outside local development |
-| `NEO4J_DATABASE` | `neo4j` | |
+| `DISCOLAB_DB` | `out/discolab.db` | The SQLite file holding the graph, created on first use |
 | `LASTFM_API_KEY` | none | Skips Last.fm when unset. The key alone is enough; the shared secret is not used |
 | `LASTFM_USERNAME` | none | The account whose scrobbles to read |
 | `SPOTIFY_CLIENT_ID` | none | Skips Spotify when unset |
@@ -140,17 +134,18 @@ Resolving the embeds is the only step that touches the network, and `--no-youtub
 
 ## Graph model
 
-| Node | Key |
-|---|---|
-| `Artist` | normalised name |
-| `Track` | normalised artist plus normalised title |
-| `Container` | album tag or subfolder |
+| Table | Key | Holds |
+|---|---|---|
+| `artist` | normalised name | Name, `external` for expansion artists, styles and labels as JSON lists |
+| `track` | normalised artist plus normalised title | `artist_key`, paths as a JSON list, plays, rekordbox facts |
+| `container` | album tag, subfolder, playlist or session | |
+| `contains` | container, track | Written by `ingest` |
+| `credited` | artist, track, role | Role is `collab`, `feature`, or `remix`. Written by `ingest` |
+| `similar` | seed, artist | Last.fm's match score. Written by `expand` |
+| `collaborates`, `co_occurs` | one row per unordered artist pair | Rebuilt by `derive` |
+| `track_tag`, `artist_tag` | track or artist, tag | rekordbox tags, and their count per artist |
 
-Observed relationships, written by `ingest`: `(Track)-[:BY]->(Artist)`, `(Container)-[:CONTAINS]->(Track)`, `(Artist)-[:CREDITED {role}]->(Track)` with role `collab`, `feature`, or `remix`.
-
-Derived relationships, written by `derive`: `(Artist)-[:COLLABORATES]-(Artist)`, `(Artist)-[:CO_OCCURS]-(Artist)`.
-
-Derived properties on `Artist`: `degree`, `community`, `component`, `component_size`, `bridge_score`.
+Derived columns on `artist`, rebuilt by `derive`: `degree`, `community`, `component`, `component_size`, `bridge_score`, `area`.
 
 ## How the edges are found
 
@@ -269,20 +264,26 @@ Tags name a sound more precisely than a catalogue does: `hardgroove`, `acidcore`
 - A verified YouTube channel that curates rather than releases is accepted when the title opens with the artist's name.
 - Deezer genres are coarse. Fine styles such as `IDM` or `Breakbeat` are not available from any source that answers faster than sixty requests a minute.
 
-## Exploring in Neo4j
+## Exploring in SQLite
 
-```cypher
-// Islands and their biggest names
-MATCH (a:Artist) WHERE a.component >= 0
-RETURN a.component AS island, a.component_size AS island_size,
-       collect(a.name)[0..8] AS artists
-ORDER BY island_size DESC LIMIT 10
+```
+sqlite3 out/discolab.db
 ```
 
-```cypher
-// Everything one artist is connected to
-MATCH (a:Artist {name: 'El Búho'})-[r:CO_OCCURS|COLLABORATES]-(n)
-RETURN a.name, type(r), n.name
+```sql
+-- Islands and their size
+SELECT component, component_size, group_concat(name, ', ') AS artists
+FROM artist WHERE component >= 0
+GROUP BY component ORDER BY component_size DESC LIMIT 10;
+```
+
+```sql
+-- Everything one artist co-occurs with
+SELECT other.name, pair.weight
+FROM artist a
+JOIN co_occurs pair ON a.key IN (pair.a, pair.b)
+JOIN artist other ON other.key IN (pair.a, pair.b) AND other.key <> a.key
+WHERE a.name = 'El Búho';
 ```
 
 ## Development

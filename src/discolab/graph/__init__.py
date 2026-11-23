@@ -7,7 +7,7 @@ from .derive import (
     build_container_edges,
 )
 from .load import load_catalog
-from .store import clear, connect, ensure_schema
+from .store import clear, connect
 
 __all__ = [
     "assign_areas",
@@ -16,6 +16,5 @@ __all__ = [
     "build_container_edges",
     "clear",
     "connect",
-    "ensure_schema",
     "load_catalog",
 ]

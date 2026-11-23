@@ -1,96 +1,90 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Sequence
 
-from neo4j import Driver
+from .store import TABLES, keys_json
+
+EDGE_TABLES = tuple(table for table in TABLES if table not in ("artist", "track", "container"))
 
 
 def bridge_candidates(
-    driver: Driver,
-    database: str,
+    connection: sqlite3.Connection,
     limit: int = 20,
     min_degree: int = 2,
     min_bridge: float = 0.0,
 ) -> list[dict]:
     """Artists that sit on paths between otherwise separate parts of the graph."""
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist)
-        WHERE a.degree >= $min_degree AND a.bridge_score > $min_bridge
-        RETURN a.key AS key, a.name AS name, a.community AS community,
-               a.component AS component, a.component_size AS component_size,
-               a.bridge_score AS bridge_score, a.degree AS degree
-        ORDER BY bridge_score DESC, degree DESC
-        LIMIT $limit
-        """,
-        min_degree=min_degree,
-        min_bridge=min_bridge,
-        limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
+    return _dicts(
+        connection.execute(
+            """
+            SELECT key, name, community, component, component_size, bridge_score, degree
+            FROM artist
+            WHERE degree >= ? AND bridge_score > ?
+            ORDER BY bridge_score DESC, degree DESC
+            LIMIT ?
+            """,
+            (min_degree, min_bridge, limit),
+        )
+    )
 
 
 def owned_tracks_for(
-    driver: Driver, database: str, artist_keys: list[str], per_artist: int = 5
+    connection: sqlite3.Connection, artist_keys: list[str], per_artist: int = 5
 ) -> dict[str, list[dict]]:
-    records = driver.execute_query(
+    rows = connection.execute(
         """
-        UNWIND $keys AS key
-        MATCH (t:Track)-[:BY]->(a:Artist {key: key})
-        WITH a.key AS artist_key, t ORDER BY coalesce(t.plays, 0) DESC, t.title
-        WITH artist_key,
-             collect({title: t.title, path: coalesce(t.paths[0], ''), plays: coalesce(t.plays, 0)})
-               [0..$per_artist] AS tracks
-        RETURN artist_key, tracks
+        SELECT artist_key, title, coalesce(paths ->> 0, '') AS path, plays
+        FROM track
+        WHERE artist_key IN (SELECT value FROM json_each(?))
+        ORDER BY plays DESC, title
         """,
-        keys=artist_keys,
-        per_artist=per_artist,
-        database_=database,
-    ).records
-    return {record["artist_key"]: record["tracks"] for record in records}
+        (keys_json(artist_keys),),
+    )
+    owned: dict[str, list[dict]] = {}
+    for row in rows:
+        tracks = owned.setdefault(row["artist_key"], [])
+        if len(tracks) < per_artist:
+            tracks.append({"title": row["title"], "path": row["path"], "plays": row["plays"]})
+    return owned
 
 
-def islands(driver: Driver, database: str, limit: int = 8, sample: int = 6) -> list[dict]:
+def islands(connection: sqlite3.Connection, limit: int = 8, sample: int = 6) -> list[dict]:
     """Connected components of the artist graph, largest first.
 
     A component is a group of artists reachable from one another. Separate
     components have no edge between them, so nothing in the data relates them.
     """
-    records = driver.execute_query(
+    rows = connection.execute(
         """
-        MATCH (a:Artist)
-        WHERE a.component >= 0
-        WITH a.component AS component, a.component_size AS size, a
-        ORDER BY a.degree DESC, a.name
-        WITH component, size, collect(a.name)[0..$sample] AS members
-        RETURN component, size, members
-        ORDER BY size DESC
-        LIMIT $limit
+        SELECT component, component_size AS size, name FROM artist
+        WHERE component >= 0 AND component < ?
+        ORDER BY component, degree DESC, name
         """,
-        sample=sample,
-        limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
+        (limit,),
+    )
+    found: dict[int, dict] = {}
+    for row in rows:
+        island = found.setdefault(
+            row["component"], {"component": row["component"], "size": row["size"], "members": []}
+        )
+        if len(island["members"]) < sample:
+            island["members"].append(row["name"])
+    return list(found.values())
 
 
-def corpus_keys(driver: Driver, database: str) -> list[str]:
+def corpus_keys(connection: sqlite3.Connection) -> list[str]:
     """Keys of artists from the user's own data.
 
     Expansion output is excluded, or the second run would treat its own
     suggestions as things the user already has.
     """
-    records = driver.execute_query(
-        "MATCH (a:Artist) WHERE coalesce(a.external, false) = false RETURN a.key AS key",
-        database_=database,
-    ).records
-    return [record["key"] for record in records]
+    return [row[0] for row in connection.execute("SELECT key FROM artist WHERE external = 0")]
 
 
 def seed_artists(
-    driver: Driver,
-    database: str,
+    connection: sqlite3.Connection,
     per_community: int = 3,
     min_degree: int = 2,
     isolated_limit: int = 0,
@@ -106,210 +100,163 @@ def seed_artists(
     filesystem joins the rest of the metal. `isolated_limit` admits that many
     of them, best represented first.
     """
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist)
-        WHERE coalesce(a.external, false) = false
-          AND a.community >= 0 AND coalesce(a.degree, 0) >= $min_degree
-        WITH a.community AS community, a
-        ORDER BY a.degree DESC, a.name
-        WITH community, collect(a)[0..$per_community] AS members
-        UNWIND members AS m
-        RETURN m.key AS key, m.name AS name, m.community AS community,
-               m.degree AS degree, false AS isolated
-        ORDER BY community, degree DESC
-        """,
-        per_community=per_community,
-        min_degree=min_degree,
-        database_=database,
-    ).records
-    seeds = [dict(record) for record in records]
-
-    if isolated_limit > 0:
-        lonely = driver.execute_query(
+    seeds = _dicts(
+        connection.execute(
             """
-            MATCH (a:Artist)
-            WHERE coalesce(a.external, false) = false AND coalesce(a.degree, 0) = 0
-            MATCH (t:Track)-[:BY]->(a)
-            WITH a, count(t) AS tracks,
-                 sum(CASE WHEN size(coalesce(t.paths, [])) > 0 THEN 1 ELSE 0 END) AS owned,
-                 sum(coalesce(t.plays, 0)) AS plays
-            WHERE owned > 0 OR plays > 0
-            RETURN a.key AS key, a.name AS name, -1 AS community,
-                   0 AS degree, true AS isolated
-            ORDER BY tracks DESC, plays DESC
-            LIMIT $isolated_limit
+            SELECT key, name, community, degree, 0 AS isolated FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY community ORDER BY degree DESC, name
+                ) AS position
+                FROM artist
+                WHERE external = 0 AND community >= 0 AND degree >= ?
+            )
+            WHERE position <= ?
+            ORDER BY community, degree DESC
             """,
-            isolated_limit=isolated_limit,
-            database_=database,
-        ).records
-        seeds.extend(dict(record) for record in lonely)
-    return seeds
+            (min_degree, per_community),
+        )
+    )
+    lonely = connection.execute(
+        """
+        SELECT a.key, a.name, -1 AS community, 0 AS degree, 1 AS isolated
+        FROM artist a JOIN track t ON t.artist_key = a.key
+        WHERE a.external = 0 AND a.degree = 0
+        GROUP BY a.key
+        HAVING sum(t.paths <> '[]') > 0 OR sum(t.plays) > 0
+        ORDER BY count(*) DESC, sum(t.plays) DESC
+        LIMIT ?
+        """,
+        (isolated_limit,),
+    )
+    return seeds + _dicts(lonely)
 
 
-def artist_sources(
-    driver: Driver, database: str, keys: Sequence[str]
-) -> dict[str, dict]:
+def artist_sources(connection: sqlite3.Connection, keys: Sequence[str]) -> dict[str, dict]:
     """Styles and labels per artist key, for whatever has been fetched so far."""
-    records = driver.execute_query(
-        """
-        UNWIND $keys AS key
-        MATCH (a:Artist {key: key})
-        RETURN a.key AS key,
-               coalesce(a.styles, []) AS styles,
-               coalesce(a.labels, []) AS labels
-        """,
-        keys=list(keys),
-        database_=database,
-    ).records
-    return {record["key"]: dict(record) for record in records}
-
-
-def clusters(
-    driver: Driver, database: str, limit: int = 40, sample: int = 6
-) -> list[dict]:
-    """The taste clusters, largest first, with their members and usual styles."""
-    sizes = {
-        record["cluster"]: dict(record)
-        for record in driver.execute_query(
-            """
-            MATCH (a:Artist)
-            WHERE a.community >= 0 AND coalesce(a.external, false) = false
-            WITH a.community AS cluster, a
-            ORDER BY a.degree DESC, a.name
-            WITH cluster, collect(a.name)[0..$sample] AS members, count(*) AS size
-            RETURN cluster, size, members
-            ORDER BY size DESC
-            LIMIT $limit
-            """,
-            sample=sample,
-            limit=limit,
-            database_=database,
-        ).records
+    rows = connection.execute(
+        "SELECT key, styles, labels FROM artist WHERE key IN (SELECT value FROM json_each(?))",
+        (keys_json(keys),),
+    )
+    return {
+        row["key"]: {
+            "key": row["key"],
+            "styles": json.loads(row["styles"]),
+            "labels": json.loads(row["labels"]),
+        }
+        for row in rows
     }
-    if not sizes:
-        return []
 
-    styles: dict[int, list[str]] = {}
-    for record in driver.execute_query(
+
+def clusters(connection: sqlite3.Connection, limit: int = 40, sample: int = 6) -> list[dict]:
+    """The taste clusters, largest first, with their members and usual styles."""
+    found: dict[int, dict] = {}
+    for row in connection.execute(
         """
-        MATCH (a:Artist) WHERE a.community >= 0
-        UNWIND coalesce(a.styles, []) AS style
-        WITH a.community AS cluster, style, count(*) AS n
-        ORDER BY n DESC
-        WITH cluster, collect(style)[0..5] AS top_styles
-        RETURN cluster, top_styles
-        """,
-        database_=database,
-    ).records:
-        styles[record["cluster"]] = record["top_styles"]
+        SELECT community, name, count(*) OVER (PARTITION BY community) AS size
+        FROM artist
+        WHERE community >= 0 AND external = 0
+        ORDER BY size DESC, community, degree DESC, name
+        """
+    ):
+        if row["community"] not in found and len(found) == limit:
+            break
+        entry = found.setdefault(
+            row["community"],
+            {"cluster": row["community"], "size": row["size"], "members": [], "styles": []},
+        )
+        if len(entry["members"]) < sample:
+            entry["members"].append(row["name"])
 
-    for cluster, entry in sizes.items():
-        entry["styles"] = styles.get(cluster, [])
-    return sorted(sizes.values(), key=lambda entry: -entry["size"])
+    for row in connection.execute(
+        """
+        SELECT a.community, style.value AS style, count(*) AS n
+        FROM artist a, json_each(a.styles) AS style
+        WHERE a.community >= 0
+        GROUP BY a.community, style.value
+        ORDER BY n DESC, style.value
+        """
+    ):
+        entry = found.get(row["community"])
+        if entry is not None and len(entry["styles"]) < 5:
+            entry["styles"].append(row["style"])
+    return list(found.values())
 
 
 def cluster_frontier(
-    driver: Driver, database: str, cluster: int, limit: int = 25
+    connection: sqlite3.Connection, cluster: int, limit: int = 25
 ) -> list[dict]:
     """Artists outside the corpus reached from one cluster's seeds.
 
     Scoping to a cluster answers a different question from the global ranking:
     not what the whole taste agrees on, but what this corner of it leads to.
     """
-    records = driver.execute_query(
+    rows = connection.execute(
         """
-        MATCH (s:Artist)-[r:SIMILAR_TO]->(e:Artist)
-        WHERE s.community = $cluster AND coalesce(e.external, false) = true
-        WITH e, count(DISTINCT s) AS seed_count, max(r.score) AS best_score,
-             collect(DISTINCT s.name)[0..4] AS seed_names
-        RETURN e.key AS key, e.name AS name, seed_count, best_score, seed_names
+        SELECT e.key, e.name, count(*) AS seed_count, max(r.score) AS best_score,
+               json_group_array(s.name) AS seed_names
+        FROM similar r
+        JOIN artist s ON s.key = r.seed_key
+        JOIN artist e ON e.key = r.artist_key
+        WHERE s.community = ? AND e.external = 1
+        GROUP BY e.key
         ORDER BY best_score DESC, seed_count DESC
-        LIMIT $limit
+        LIMIT ?
         """,
-        cluster=cluster,
-        limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
+        (cluster, limit),
+    )
+    return [{**dict(row), "seed_names": json.loads(row["seed_names"])[:4]} for row in rows]
 
 
 def cluster_periphery(
-    driver: Driver, database: str, cluster: int, limit: int = 25
+    connection: sqlite3.Connection, cluster: int, limit: int = 25
 ) -> list[dict]:
     """The cluster's own artists that barely connect to it.
 
     A member with one edge sits at the edge of the taste rather than in it,
     which is where something recognisable but rarely played tends to live.
     """
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist)
-        WHERE a.community = $cluster AND coalesce(a.external, false) = false
-        RETURN a.key AS key, a.name AS name, a.community AS community,
-               coalesce(a.degree, 0) AS degree, coalesce(a.bridge_score, 0.0) AS bridge_score
-        ORDER BY degree ASC, a.name
-        LIMIT $limit
-        """,
-        cluster=cluster,
-        limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
+    return _dicts(
+        connection.execute(
+            """
+            SELECT key, name, community, degree, bridge_score FROM artist
+            WHERE community = ? AND external = 0
+            ORDER BY degree, name
+            LIMIT ?
+            """,
+            (cluster, limit),
+        )
+    )
 
 
-def track_paths(driver: Driver, database: str) -> list[dict]:
-    records = driver.execute_query(
-        "MATCH (t:Track) UNWIND t.paths AS p RETURN t.key AS key, p AS path",
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
+def track_paths(connection: sqlite3.Connection) -> list[dict]:
+    return _dicts(
+        connection.execute(
+            "SELECT t.key, path.value AS path FROM track t, json_each(t.paths) AS path"
+        )
+    )
 
 
-def artist_tempo(
-    driver: Driver, database: str, keys: Sequence[str]
-) -> dict[str, dict]:
+def artist_tempo(connection: sqlite3.Connection, keys: Sequence[str]) -> dict[str, dict]:
     """Tempo range and keys per artist, from the tracks the library holds."""
-    records = driver.execute_query(
+    rows = connection.execute(
         """
-        UNWIND $keys AS key
-        MATCH (a:Artist {key: key})<-[:BY]-(t:Track)
-        WHERE t.bpm IS NOT NULL
-        WITH key, count(t) AS tracks, min(t.bpm) AS low, max(t.bpm) AS high,
-             avg(t.bpm) AS mean,
-             [k IN collect(DISTINCT t.musical_key) WHERE k IS NOT NULL][0..4] AS musical_keys
-        RETURN key, tracks, low, high, mean, musical_keys
+        SELECT artist_key AS key, count(*) AS tracks, min(bpm) AS low, max(bpm) AS high,
+               avg(bpm) AS mean, json_group_array(DISTINCT musical_key) AS musical_keys
+        FROM track
+        WHERE bpm IS NOT NULL AND artist_key IN (SELECT value FROM json_each(?))
+        GROUP BY artist_key
         """,
-        keys=list(keys),
-        database_=database,
-    ).records
-    return {record["key"]: dict(record) for record in records}
-
-
-def orphan_counts(driver: Driver, database: str) -> dict[str, int]:
-    """Artists and labels with no relationships at all."""
-    record = driver.execute_query(
-        """
-        MATCH (a:Artist) WHERE NOT (a)--()
-        WITH count(a) AS artists
-        MATCH (l:Label) WHERE NOT (l)--()
-        RETURN artists, count(l) AS labels
-        """,
-        database_=database,
-    ).records[0]
-    return {"artists": record["artists"], "labels": record["labels"]}
-
-
-def artist_keys(driver: Driver, database: str) -> list[str]:
-    records = driver.execute_query(
-        "MATCH (a:Artist) RETURN a.key AS key", database_=database
-    ).records
-    return [record["key"] for record in records]
+        (keys_json(keys),),
+    )
+    tempo = {}
+    for row in rows:
+        musical_keys = [key for key in json.loads(row["musical_keys"]) if key is not None]
+        tempo[row["key"]] = {**dict(row), "musical_keys": musical_keys[:4]}
+    return tempo
 
 
 def external_candidates(
-    driver: Driver,
-    database: str,
+    connection: sqlite3.Connection,
     limit: int = 25,
     min_areas: int = 2,
     min_area_seeds: int = 5,
@@ -327,59 +274,100 @@ def external_candidates(
     the graph stays complete and the filter is a choice about where to look
     rather than a value baked into the rank.
     """
-    records = driver.execute_query(
-        """
-        MATCH (s:Artist)-[:SIMILAR_TO]->()
-        WHERE s.area >= 0
-        WITH s.area AS area, count(DISTINCT s) AS area_seeds
-        WHERE area_seeds >= $min_area_seeds
-        MATCH (s:Artist {area: area})-[:SIMILAR_TO]->(e:Artist)
-        WHERE coalesce(e.external, false) = true
-        WITH e, area, area_seeds, count(DISTINCT s) AS votes,
-             collect(DISTINCT s.name)[0..2] AS names
-        WHERE votes >= 2
-        WITH e, toFloat(votes) / area_seeds AS support, votes, names
-        ORDER BY support DESC
-        WITH e, collect(support) AS supports, collect(names) AS names,
-             sum(votes) AS seed_count, count(*) AS areas
-        WHERE areas >= $min_areas
-        RETURN e.key AS key, e.name AS name, seed_count, areas,
-               supports[1] AS balance, names[0] + names[1] AS seed_names
-        ORDER BY balance DESC, seed_count DESC, key
-        LIMIT $limit
-        """,
-        min_areas=max(2, min_areas),
-        min_area_seeds=min_area_seeds,
-        limit=limit,
-        database_=database,
-    ).records
-    return [dict(record) for record in records]
+    rows = _dicts(
+        connection.execute(
+            """
+            WITH seed AS (
+                SELECT DISTINCT r.seed_key AS key, s.area
+                FROM similar r JOIN artist s ON s.key = r.seed_key
+                WHERE s.area >= 0
+            ),
+            eligible AS (
+                SELECT area, count(*) AS area_seeds FROM seed
+                GROUP BY area HAVING count(*) >= :min_area_seeds
+            ),
+            vote AS (
+                SELECT r.artist_key AS key, seed.area, count(*) AS votes,
+                       1.0 * count(*) / eligible.area_seeds AS support
+                FROM similar r
+                JOIN seed ON seed.key = r.seed_key
+                JOIN eligible ON eligible.area = seed.area
+                JOIN artist e ON e.key = r.artist_key AND e.external = 1
+                GROUP BY r.artist_key, seed.area
+                HAVING count(*) >= 2
+            ),
+            ranked AS (
+                SELECT key, area, support,
+                       row_number() OVER (
+                           PARTITION BY key ORDER BY support DESC, area
+                       ) AS position,
+                       count(*) OVER (PARTITION BY key) AS areas,
+                       sum(votes) OVER (PARTITION BY key) AS seed_count
+                FROM vote
+            )
+            SELECT e.key, e.name, weaker.seed_count, weaker.areas,
+                   weaker.support AS balance,
+                   stronger.area AS stronger_area, weaker.area AS weaker_area
+            FROM ranked weaker
+            JOIN ranked stronger ON stronger.key = weaker.key AND stronger.position = 1
+            JOIN artist e ON e.key = weaker.key
+            WHERE weaker.position = 2 AND weaker.areas >= :min_areas
+            ORDER BY balance DESC, weaker.seed_count DESC, e.key
+            LIMIT :limit
+            """,
+            {"min_areas": max(2, min_areas), "min_area_seeds": min_area_seeds, "limit": limit},
+        )
+    )
+    for row in rows:
+        row["seed_names"] = _area_seed_names(
+            connection, row["key"], row.pop("stronger_area")
+        ) + _area_seed_names(connection, row["key"], row.pop("weaker_area"))
+    return rows
 
 
-def library_titles(driver: Driver, database: str) -> list[str]:
-    records = driver.execute_query(
-        "MATCH (t:Track) RETURN DISTINCT t.title AS title",
-        database_=database,
-    ).records
-    return [record["title"] for record in records]
+def _area_seed_names(
+    connection: sqlite3.Connection, artist_key: str, area: int, count: int = 2
+) -> list[str]:
+    """The seeds in one area that name the artist, closest match first."""
+    return [
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT s.name FROM similar r JOIN artist s ON s.key = r.seed_key
+            WHERE r.artist_key = ? AND s.area = ?
+            ORDER BY r.score DESC, s.name
+            LIMIT ?
+            """,
+            (artist_key, area, count),
+        )
+    ]
 
 
-def stats(driver: Driver, database: str) -> dict:
-    record = driver.execute_query(
-        """
-        MATCH (a:Artist)
-        WITH count(a) AS artists,
-             sum(CASE WHEN coalesce(a.degree, 0) = 0 THEN 1 ELSE 0 END) AS isolated_artists
-        MATCH (t:Track) WITH artists, isolated_artists, count(t) AS tracks
-        MATCH (c:Container) WITH artists, isolated_artists, tracks, count(c) AS containers
-        MATCH ()-[r]->() WITH artists, isolated_artists, tracks, containers, count(r) AS relationships
-        MATCH (x:Artist) WHERE x.component >= 0
-        WITH artists, isolated_artists, tracks, containers, relationships,
-             count(DISTINCT x.component) AS components, max(x.component_size) AS largest_component
-        MATCH (y:Artist) WHERE coalesce(y.degree, 0) > 0
-        RETURN artists, isolated_artists, tracks, containers, relationships,
-               components, largest_component, count(y) AS connected_artists
-        """,
-        database_=database,
-    ).records[0]
-    return dict(record)
+def library_titles(connection: sqlite3.Connection) -> list[str]:
+    return [row[0] for row in connection.execute("SELECT DISTINCT title FROM track")]
+
+
+def stats(connection: sqlite3.Connection) -> dict:
+    summary = dict(
+        connection.execute(
+            """
+            SELECT count(*) AS artists,
+                   coalesce(sum(degree = 0), 0) AS isolated_artists,
+                   coalesce(sum(degree > 0), 0) AS connected_artists,
+                   count(DISTINCT CASE WHEN component >= 0 THEN component END) AS components,
+                   coalesce(max(component_size), 0) AS largest_component,
+                   (SELECT count(*) FROM track) AS tracks,
+                   (SELECT count(*) FROM container) AS containers
+            FROM artist
+            """
+        ).fetchone()
+    )
+    summary["relationships"] = sum(
+        connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        for table in EDGE_TABLES
+    )
+    return summary
+
+
+def _dicts(rows: sqlite3.Cursor) -> list[dict]:
+    return [dict(row) for row in rows]

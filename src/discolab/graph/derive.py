@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
+
 import networkx as nx
-from neo4j import Driver
 
 DEFAULT_RESOLUTION = 1.0
 RANDOM_SEED = 42
@@ -9,112 +10,97 @@ RANDOM_SEED = 42
 # areas, and its own fragments then "agree" as if they were distinct tastes.
 AREA_RESOLUTION = 0.3
 
-
-def build_collaboration_edges(driver: Driver, database: str) -> int:
-    """Connect two artists credited on the same track, excluding primary-to-primary."""
-    result = driver.execute_query(
-        """
-        MATCH (a:Artist)-[:CREDITED]->(t:Track)-[:BY]->(b:Artist)
-        WHERE a <> b
-        WITH a, b, count(DISTINCT t) AS tracks
-        MERGE (a)-[r:COLLABORATES]-(b)
-        SET r.weight = tracks, r.via = 'credit'
-        RETURN count(*) AS edges
-        """,
-        database_=database,
+# One weighted row per unordered artist pair. Ordered, because Louvain's result
+# depends on the order edges are added in, even with a fixed seed.
+ARTIST_EDGES = """
+    SELECT source, target, sum(weight) AS weight FROM (
+        SELECT min(seed_key, artist_key) AS source, max(seed_key, artist_key) AS target,
+               coalesce(score, 1) AS weight
+        FROM similar WHERE seed_key <> artist_key
+        UNION ALL
+        SELECT a, b, 2.0 FROM collaborates
     )
-    return result.records[0]["edges"]
+    {where}
+    GROUP BY source, target
+    ORDER BY source, target
+"""
+CORPUS_ONLY = """
+    WHERE source IN (SELECT key FROM artist WHERE external = 0)
+      AND target IN (SELECT key FROM artist WHERE external = 0)
+"""
+
+
+def build_collaboration_edges(connection: sqlite3.Connection) -> int:
+    """Connect two artists credited on the same track, excluding primary-to-primary."""
+    connection.execute("DELETE FROM collaborates")
+    return connection.execute(
+        """
+        INSERT INTO collaborates (a, b, weight)
+        SELECT min(c.artist_key, t.artist_key), max(c.artist_key, t.artist_key),
+               count(DISTINCT t.key)
+        FROM credited c JOIN track t ON t.key = c.track_key
+        WHERE c.artist_key <> t.artist_key
+        GROUP BY 1, 2
+        """
+    ).rowcount
 
 
 def build_container_edges(
-    driver: Driver, database: str, min_artists: int = 2, max_artists: int = 80
+    connection: sqlite3.Connection, min_artists: int = 2, max_artists: int = 80
 ) -> int:
     """Connect artists sharing a container, skipping containers that are too broad to inform."""
-    result = driver.execute_query(
+    connection.execute("DELETE FROM co_occurs")
+    connection.execute(
         """
-        MATCH (c:Container)-[:CONTAINS]->(:Track)-[:BY]->(a:Artist)
-        WITH c, collect(DISTINCT a) AS artists
-        WHERE size(artists) >= $min_artists AND size(artists) <= $max_artists
-        UNWIND artists AS x
-        UNWIND artists AS y
-        WITH x, y WHERE x.key < y.key
-        MERGE (x)-[r:CO_OCCURS]-(y)
-        SET r.weight = coalesce(r.weight, 0) + 1, r.via = 'container'
-        RETURN count(*) AS edges
+        WITH member AS (
+            SELECT DISTINCT c.container_key, t.artist_key
+            FROM contains c JOIN track t ON t.key = c.track_key
+        ),
+        informative AS (
+            SELECT container_key FROM member
+            GROUP BY container_key HAVING count(*) BETWEEN :min_artists AND :max_artists
+        )
+        INSERT INTO co_occurs (a, b, weight)
+        SELECT x.artist_key, y.artist_key, count(*)
+        FROM informative
+        JOIN member x USING (container_key)
+        JOIN member y USING (container_key)
+        WHERE x.artist_key < y.artist_key
+        GROUP BY x.artist_key, y.artist_key
         """,
-        min_artists=min_artists,
-        max_artists=max_artists,
-        database_=database,
+        {"min_artists": min_artists, "max_artists": max_artists},
     )
-    return result.records[0]["edges"]
-
-
-def reconnect_isolated(driver: Driver, database: str) -> int:
-    """Give artists with no cluster the cluster most of their similar artists share.
-
-    A file-only artist has no co-occurrence with anyone and no credit naming
-    another artist, so it sits outside every cluster even when it plainly
-    belongs to one. Similarity edges carry the missing group membership, which
-    is how a metal record buried in the filesystem finds the rest of the metal.
-    """
-    result = driver.execute_query(
-        """
-        MATCH (a:Artist) WHERE a.community < 0
-        MATCH (a)-[r:SIMILAR_TO]-(n:Artist) WHERE n.community >= 0
-        WITH a, n.community AS community, count(*) AS votes, sum(r.score) AS weight
-        ORDER BY votes DESC, weight DESC
-        WITH a, collect(community)[0] AS community
-        SET a.community = community, a.reconnected = true
-        RETURN count(*) AS reconnected
-        """,
-        database_=database,
-    )
-    return result.records[0]["reconnected"]
+    # A statement opening with WITH reports a rowcount of -1.
+    return connection.execute("SELECT count(*) FROM co_occurs").fetchone()[0]
 
 
 def assign_communities(
-    driver: Driver, database: str, resolution: float = DEFAULT_RESOLUTION
+    connection: sqlite3.Connection, resolution: float = DEFAULT_RESOLUTION
 ) -> dict:
-    """Louvain communities, connected components, and betweenness, written back as properties."""
-    driver.execute_query(
-        "MATCH (a:Artist) SET a.community = -1, a.component = -1, a.component_size = 0, "
-        "a.bridge_score = 0.0, a.degree = 0",
-        database_=database,
+    """Louvain communities, connected components, and betweenness, written back as columns."""
+    connection.execute(
+        "UPDATE artist SET community = -1, component = -1, component_size = 0, "
+        "bridge_score = 0.0, degree = 0"
     )
-
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist)-[r:SIMILAR_TO|COLLABORATES]-(b:Artist)
-        WHERE a.key < b.key
-        WITH a.key AS source, b.key AS target,
-             sum(CASE WHEN type(r) = 'COLLABORATES'
-                      THEN coalesce(r.credits, 1) * 2.0
-                      ELSE coalesce(r.score, 1) END) AS weight
-        RETURN source, target, weight
-        """,
-        database_=database,
-    ).records
-
-    graph = nx.Graph()
-    for record in records:
-        graph.add_edge(record["source"], record["target"], weight=record["weight"])
-
+    graph = _graph(connection, ARTIST_EDGES.format(where=""))
     if graph.number_of_nodes() == 0:
-        return {"artists_in_graph": 0, "edges": 0, "communities": 0, "components": 0}
+        return {
+            "artists_in_graph": 0,
+            "edges": 0,
+            "communities": 0,
+            "components": 0,
+            "largest_component": 0,
+            "bridging_artists": 0,
+        }
 
     communities = nx.community.louvain_communities(
         graph, weight="weight", resolution=resolution, seed=RANDOM_SEED
     )
-    membership: dict[str, int] = {}
-    for index, members in enumerate(sorted(communities, key=len, reverse=True)):
-        for key in members:
-            membership[key] = index
-
-    components = sorted(nx.connected_components(graph), key=len, reverse=True)
-    component_of: dict[str, tuple[int, int]] = {}
-    for index, members in enumerate(components):
-        for key in members:
-            component_of[key] = (index, len(members))
+    membership = _largest_first(communities)
+    components = sorted(
+        nx.connected_components(graph), key=lambda members: (-len(members), min(members))
+    )
+    component_of = _largest_first(components)
 
     # Sampled: exact betweenness is O(nm), which on fifteen thousand artists and
     # sixty thousand edges is hours. Five hundred sources is plenty to rank them.
@@ -122,29 +108,20 @@ def assign_communities(
         graph, k=min(500, graph.number_of_nodes()), normalized=True, seed=RANDOM_SEED
     )
 
-    rows = [
-        {
-            "key": key,
-            "community": membership[key],
-            "component": component_of[key][0],
-            "component_size": component_of[key][1],
-            "bridge_score": betweenness.get(key, 0.0),
-            "degree": graph.degree(key),
-        }
-        for key in graph.nodes
-    ]
-    driver.execute_query(
-        """
-        UNWIND $rows AS row
-        MATCH (a:Artist {key: row.key})
-        SET a.community = row.community,
-            a.component = row.component,
-            a.component_size = row.component_size,
-            a.bridge_score = row.bridge_score,
-            a.degree = row.degree
-        """,
-        rows=rows,
-        database_=database,
+    connection.executemany(
+        "UPDATE artist SET community = ?, component = ?, component_size = ?, "
+        "bridge_score = ?, degree = ? WHERE key = ?",
+        [
+            (
+                membership[key],
+                component_of[key],
+                len(components[component_of[key]]),
+                betweenness.get(key, 0.0),
+                graph.degree(key),
+                key,
+            )
+            for key in graph.nodes
+        ],
     )
     return {
         "artists_in_graph": graph.number_of_nodes(),
@@ -156,40 +133,33 @@ def assign_communities(
     }
 
 
-def assign_areas(driver: Driver, database: str, resolution: float = AREA_RESOLUTION) -> int:
-    """Louvain over the user's own artists only, written as `Artist.area`.
+def assign_areas(connection: sqlite3.Connection, resolution: float = AREA_RESOLUTION) -> int:
+    """Louvain over the user's own artists only, written as `artist.area`.
 
     Communities include expansion artists, and one that links two areas pulls
     them into a single community, which erases the intersection being ranked.
     """
-    driver.execute_query("MATCH (a:Artist) SET a.area = -1", database_=database)
-    records = driver.execute_query(
-        """
-        MATCH (a:Artist)-[r:SIMILAR_TO|COLLABORATES]-(b:Artist)
-        WHERE a.key < b.key
-          AND coalesce(a.external, false) = false AND coalesce(b.external, false) = false
-        RETURN a.key AS source, b.key AS target,
-               sum(CASE WHEN type(r) = 'COLLABORATES' THEN 2.0
-                        ELSE coalesce(r.score, 1) END) AS weight
-        """,
-        database_=database,
-    ).records
-    graph = nx.Graph()
-    for record in records:
-        graph.add_edge(record["source"], record["target"], weight=record["weight"])
+    connection.execute("UPDATE artist SET area = -1")
+    graph = _graph(connection, ARTIST_EDGES.format(where=CORPUS_ONLY))
     if graph.number_of_nodes() == 0:
         return 0
     areas = nx.community.louvain_communities(
         graph, weight="weight", resolution=resolution, seed=RANDOM_SEED
     )
-    rows = [
-        {"key": key, "area": index}
-        for index, members in enumerate(sorted(areas, key=len, reverse=True))
-        for key in members
-    ]
-    driver.execute_query(
-        "UNWIND $rows AS row MATCH (a:Artist {key: row.key}) SET a.area = row.area",
-        rows=rows,
-        database_=database,
+    connection.executemany(
+        "UPDATE artist SET area = ? WHERE key = ?",
+        [(area, key) for key, area in _largest_first(areas).items()],
     )
     return len(areas)
+
+
+def _graph(connection: sqlite3.Connection, edges_sql: str) -> nx.Graph:
+    graph = nx.Graph()
+    graph.add_weighted_edges_from(connection.execute(edges_sql))
+    return graph
+
+
+def _largest_first(groups: list[set[str]]) -> dict[str, int]:
+    """Each member's group index, numbering groups from the largest down."""
+    ordered = sorted(groups, key=lambda members: (-len(members), min(members)))
+    return {key: index for index, members in enumerate(ordered) for key in members}

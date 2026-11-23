@@ -1,54 +1,54 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from typing import Any
-
-from neo4j import Driver
+import json
+import sqlite3
 
 from ..model import Catalog
 
-BATCH_SIZE = 2000
 
-
-def load_catalog(driver: Driver, database: str, catalog: Catalog) -> None:
-    _write_nodes(
-        driver,
-        database,
-        "Artist",
-        [{"key": artist.key, "name": artist.name} for artist in catalog.artists],
+def load_catalog(connection: sqlite3.Connection, catalog: Catalog) -> None:
+    connection.executemany(
+        "INSERT INTO artist (key, name) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET name = excluded.name",
+        [(artist.key, artist.name) for artist in catalog.artists],
     )
-    _write_nodes(
-        driver,
-        database,
-        "Container",
+    connection.executemany(
+        "INSERT INTO container (key, kind, name) VALUES (?, ?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET kind = excluded.kind, name = excluded.name",
+        [(container.key, container.kind, container.name) for container in catalog.containers],
+    )
+    connection.executemany(
+        """
+        INSERT INTO track (key, title, artist_key, duration_ms, paths, plays)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (key) DO UPDATE SET
+            title = excluded.title, artist_key = excluded.artist_key,
+            duration_ms = excluded.duration_ms, paths = excluded.paths,
+            plays = excluded.plays
+        """,
         [
-            {"key": container.key, "kind": container.kind, "name": container.name}
-            for container in catalog.containers
+            (
+                track.key,
+                track.title,
+                track.artist_key,
+                track.duration_ms,
+                json.dumps(track.paths),
+                track.plays,
+            )
+            for track in catalog.tracks
         ],
     )
-    _write_tracks(driver, database, catalog)
-    _write_relations(
-        driver,
-        database,
-        "UNWIND $rows AS row "
-        "MATCH (c:Container {key: row.left}) MATCH (t:Track {key: row.right}) "
-        "MERGE (c)-[:CONTAINS]->(t)",
-        [(container_key, track_key) for container_key, track_key in catalog.memberships],
+    connection.executemany(
+        "INSERT OR IGNORE INTO contains (container_key, track_key) VALUES (?, ?)",
+        catalog.memberships,
     )
-    _write_relations(
-        driver,
-        database,
-        "UNWIND $rows AS row "
-        "MATCH (a:Artist {key: row.left}) MATCH (t:Track {key: row.right}) "
-        "MERGE (a)-[:CREDITED {role: row.role}]->(t)",
-        [
-            (credit.artist_key, credit.track_key, credit.role)
-            for credit in catalog.credits
-        ],
+    connection.executemany(
+        "INSERT OR IGNORE INTO credited (artist_key, track_key, role) VALUES (?, ?, ?)",
+        [(credit.artist_key, credit.track_key, credit.role) for credit in catalog.credits],
     )
 
 
-def write_lastfm_tags(driver: Driver, database: str, rows: list[dict]) -> int:
+def write_lastfm_tags(connection: sqlite3.Connection, rows: list[dict]) -> int:
     """Attach Last.fm's tags where no genre source has described the artist.
 
     Styles are filled rather than replaced. Two taxonomies on one artist make a
@@ -56,156 +56,96 @@ def write_lastfm_tags(driver: Driver, database: str, rows: list[dict]) -> int:
     family would then be counting a blend of them. `lastfm` records that the
     artist was asked, so a later run does not ask again.
     """
-    if not rows:
-        return 0
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            """
-            UNWIND $rows AS row
-            MATCH (a:Artist {key: row.key})
-            SET a.styles = CASE WHEN size(coalesce(a.styles, [])) = 0
-                                THEN row.styles ELSE a.styles END,
-                a.lastfm = true
-            """,
-            rows=chunk,
-            database_=database,
-        )
+    connection.executemany(
+        """
+        UPDATE artist
+        SET styles = CASE WHEN styles = '[]' THEN ? ELSE styles END, lastfm = 1
+        WHERE key = ?
+        """,
+        [(json.dumps(row["styles"]), row["key"]) for row in rows],
+    )
+    # Committed per batch: a run of twelve thousand requests is otherwise lost
+    # whole when it is interrupted.
+    connection.commit()
     return len(rows)
 
 
-def write_track_facts(driver: Driver, database: str, rows: list[dict]) -> int:
+def write_track_facts(connection: sqlite3.Connection, rows: list[dict]) -> int:
     """Attach curated facts and their tags to tracks, then roll tags up to artists."""
     if not rows:
         return 0
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            """
-            UNWIND $rows AS row
-            MATCH (t:Track {key: row.key})
-            SET t.bpm = row.bpm, t.musical_key = row.musical_key,
-                t.rating = row.rating, t.dj_plays = row.dj_plays
-            WITH t, row
-            UNWIND row.tags AS tag_name
-            MERGE (g:Tag {key: tag_name})
-            MERGE (t)-[:TAGGED]->(g)
-            """,
-            rows=chunk,
-            database_=database,
-        )
+    connection.executemany(
+        "UPDATE track SET bpm = :bpm, musical_key = :musical_key, "
+        "rating = :rating, dj_plays = :dj_plays WHERE key = :key",
+        rows,
+    )
+    connection.executemany(
+        "INSERT OR IGNORE INTO track_tag (track_key, tag) VALUES (?, ?)",
+        [(row["key"], tag) for row in rows for tag in row["tags"]],
+    )
     # An artist's genres are the union of what its tracks carry, weighted by
     # how many tracks carry each.
-    driver.execute_query(
+    connection.execute("DELETE FROM artist_tag")
+    connection.execute(
         """
-        MATCH (a:Artist)<-[:BY]-(t:Track)-[:TAGGED]->(g:Tag)
-        WITH a, g, count(*) AS n
-        MERGE (a)-[r:TAGGED]->(g)
-        SET r.tracks = n
-        """,
-        database_=database,
+        INSERT INTO artist_tag (artist_key, tag, tracks)
+        SELECT t.artist_key, g.tag, count(*)
+        FROM track_tag g JOIN track t ON t.key = g.track_key
+        GROUP BY t.artist_key, g.tag
+        """
     )
     return len(rows)
 
 
-def drop_single_seed_artists(driver: Driver, database: str) -> int:
+def drop_single_seed_artists(connection: sqlite3.Connection) -> int:
     """Remove expansion artists that only one seed points at.
 
     A candidate one seed names and no other can never reach a page: the ranking
     needs several seeds to agree. Left in, they are most of the artists in the
-    graph and every later pass walks them. Measured at 30,832 of 43,906.
+    database and every later pass walks them. Measured at 30,832 of 43,906.
     """
-    records = driver.execute_query(
+    dropped = connection.execute(
         """
-        MATCH (a:Artist)
-        WHERE coalesce(a.external, false) = true AND NOT (a)<-[:BY]-(:Track)
-        WITH a, size([(s:Artist)-[:SIMILAR_TO]->(a) | s]) AS agreement
-        WHERE agreement < 2
-        DETACH DELETE a
-        RETURN count(*) AS dropped
-        """,
-        database_=database,
-    ).records
-    return records[0]["dropped"] if records else 0
+        DELETE FROM artist
+        WHERE external = 1
+          AND NOT EXISTS (SELECT 1 FROM track WHERE artist_key = artist.key)
+          AND (SELECT count(*) FROM similar WHERE artist_key = artist.key) < 2
+        """
+    ).rowcount
+    connection.execute(
+        """
+        DELETE FROM similar
+        WHERE NOT EXISTS (SELECT 1 FROM artist WHERE key = similar.artist_key)
+           OR NOT EXISTS (SELECT 1 FROM artist WHERE key = similar.seed_key)
+        """
+    )
+    return dropped
 
 
-def write_expansion(driver: Driver, database: str, rows: list[dict]) -> int:
+def write_expansion(connection: sqlite3.Connection, rows: list[dict]) -> int:
     """Write similarity edges and the artists they point at.
 
     A suggestion that is already in the corpus still gets its edge: those are
     the links that pull an artist with no co-occurrence at all into the graph.
     Only genuinely new artists are marked external.
     """
-    if not rows:
-        return 0
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            """
-            UNWIND $rows AS row
-            MERGE (e:Artist {key: row.key})
-            SET e.name = coalesce(e.name, row.name),
-                e.external = coalesce(e.external, row.external),
-                e.url = coalesce(row.url, e.url)
-            WITH e, row
-            MATCH (s:Artist {key: row.seed_key})
-            MERGE (s)-[r:SIMILAR_TO]->(e)
-            SET r.score = row.score, r.source = row.source
-            """,
-            rows=chunk,
-            database_=database,
-        )
+    connection.executemany(
+        """
+        INSERT INTO artist (key, name, external, url)
+        VALUES (:key, :name, :external, :url)
+        ON CONFLICT (key) DO UPDATE SET url = coalesce(excluded.url, url)
+        """,
+        rows,
+    )
+    connection.executemany(
+        """
+        INSERT INTO similar (seed_key, artist_key, score, source)
+        VALUES (:seed_key, :key, :score, :source)
+        ON CONFLICT (seed_key, artist_key) DO UPDATE SET
+            score = excluded.score, source = excluded.source
+        """,
+        rows,
+    )
+    # Committed per batch, so a twenty-minute expansion shows up as it goes.
+    connection.commit()
     return len(rows)
-
-
-def _write_nodes(
-    driver: Driver, database: str, label: str, rows: Sequence[dict[str, Any]]
-) -> None:
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            f"UNWIND $rows AS row MERGE (n:{label} {{key: row.key}}) SET n += row",
-            rows=chunk,
-            database_=database,
-        )
-
-
-def _write_tracks(driver: Driver, database: str, catalog: Catalog) -> None:
-    rows = [
-        {
-            "key": track.key,
-            "title": track.title,
-            "artist_key": track.artist_key,
-            "duration_ms": track.duration_ms,
-            "paths": list(track.paths),
-            "plays": track.plays,
-        }
-        for track in catalog.tracks
-    ]
-    for chunk in _chunks(rows, BATCH_SIZE):
-        driver.execute_query(
-            """
-            UNWIND $rows AS row
-            MERGE (t:Track {key: row.key})
-            SET t.title = row.title, t.duration_ms = row.duration_ms,
-                t.paths = row.paths, t.plays = row.plays
-            WITH t, row
-            MATCH (a:Artist {key: row.artist_key})
-            MERGE (t)-[:BY]->(a)
-            """,
-            rows=chunk,
-            database_=database,
-        )
-
-
-def _write_relations(
-    driver: Driver, database: str, statement: str, rows: Iterable[tuple]
-) -> None:
-    materialised = list(rows)
-    for chunk in _chunks(materialised, BATCH_SIZE):
-        payload = [
-            {"left": row[0], "right": row[1], "role": row[2] if len(row) > 2 else None}
-            for row in chunk
-        ]
-        driver.execute_query(statement, rows=payload, database_=database)
-
-
-def _chunks(rows: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
-    for start in range(0, len(rows), size):
-        yield rows[start : start + size]

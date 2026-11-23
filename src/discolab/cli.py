@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import math
 import os
 
@@ -158,11 +159,10 @@ def ingest(
         for path, reason in catalog.skipped[:5]:
             typer.echo(f"  {reason}: {path}")
 
-    with store.connect(settings) as driver:
-        store.ensure_schema(driver, settings.neo4j_database)
+    with store.connect(settings) as connection:
         if recreate:
-            store.clear(driver, settings.neo4j_database)
-        load.load_catalog(driver, settings.neo4j_database, catalog)
+            store.clear(connection)
+        load.load_catalog(connection, catalog)
     typer.echo("loaded")
 
     if rekordbox:
@@ -186,9 +186,8 @@ def _apply_rekordbox_facts(settings: Settings) -> None:
         typer.echo(f"rekordbox: skipped, {error}", err=True)
         return
 
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        pairs = query.track_paths(driver, database)
+    with store.connect(settings) as connection:
+        pairs = query.track_paths(connection)
         rows: list[dict] = []
         seen: set[str] = set()
         for pair in pairs:
@@ -206,7 +205,7 @@ def _apply_rekordbox_facts(settings: Settings) -> None:
                     "tags": list(sheet.tags),
                 }
             )
-        load.write_track_facts(driver, database, rows)
+        load.write_track_facts(connection, rows)
     typer.echo(
         f"rekordbox: {len(rows)} of {len(pairs)} paths matched, "
         f"{sum(1 for row in rows if row['bpm'])} with a BPM, "
@@ -224,13 +223,11 @@ def derive_edges(
 ) -> None:
     """Compute artist to artist edges, communities, and bridge scores."""
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        credits = derive.build_collaboration_edges(driver, database)
-        containers = derive.build_container_edges(driver, database, min_artists, max_artists)
-        summary = derive.assign_communities(driver, database, resolution)
-        reconnected = derive.reconnect_isolated(driver, database)
-        areas = derive.assign_areas(driver, database)
+    with store.connect(settings) as connection:
+        credits = derive.build_collaboration_edges(connection)
+        containers = derive.build_container_edges(connection, min_artists, max_artists)
+        summary = derive.assign_communities(connection, resolution)
+        areas = derive.assign_areas(connection)
 
     typer.echo(f"credit edges: {credits}, container edges: {containers}")
     typer.echo(
@@ -241,7 +238,6 @@ def derive_edges(
         f"largest island: {summary['largest_component']} artists, "
         f"bridging artists: {summary['bridging_artists']}"
     )
-    typer.echo(f"artists given a cluster from their similar artists: {reconnected}")
     typer.echo(f"taste areas over your own artists: {areas}")
 
 
@@ -256,14 +252,13 @@ def candidates(
 ) -> None:
     """Rank artists sitting between otherwise separate parts of the graph."""
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        rows = query.bridge_candidates(driver, database, limit, min_degree, min_bridge)
+    with store.connect(settings) as connection:
+        rows = query.bridge_candidates(connection, limit, min_degree, min_bridge)
         if not rows:
-            _explain_empty(driver, database)
+            _explain_empty(connection)
             raise typer.Exit(code=0)
         owned = (
-            query.owned_tracks_for(driver, database, [row["key"] for row in rows])
+            query.owned_tracks_for(connection, [row["key"] for row in rows])
             if tracks
             else {}
         )
@@ -282,10 +277,9 @@ def candidates(
 def stats(island_count: int = typer.Option(8, "--islands", help="Islands to list.")) -> None:
     """Print node, edge, and island counts, then the largest islands."""
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        summary = query.stats(driver, database)
-        island_rows = query.islands(driver, database, island_count)
+    with store.connect(settings) as connection:
+        summary = query.stats(connection)
+        island_rows = query.islands(connection, island_count)
     for key, value in summary.items():
         typer.echo(f"{key}: {value}")
     typer.echo("islands (largest first):")
@@ -295,12 +289,12 @@ def stats(island_count: int = typer.Option(8, "--islands", help="Islands to list
 
 @app.command()
 def reset(yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt.")) -> None:
-    """Delete every node and relationship in the database."""
+    """Delete every row in the database."""
     settings = _settings([])
     if not yes:
-        typer.confirm(f"delete all data in {settings.neo4j_uri}/{settings.neo4j_database}?", abort=True)
-    with store.connect(settings) as driver:
-        store.clear(driver, settings.neo4j_database)
+        typer.confirm(f"delete all data in {settings.database_path}?", abort=True)
+    with store.connect(settings) as connection:
+        store.clear(connection)
     typer.echo("cleared")
 
 
@@ -378,10 +372,9 @@ def expand(
         typer.echo("set LASTFM_API_KEY in .env", err=True)
         raise typer.Exit(code=2)
 
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        seed_rows = query.seed_artists(driver, database, per_cluster, min_degree, isolated)
-        known = set(query.corpus_keys(driver, database))
+    with store.connect(settings) as connection:
+        seed_rows = query.seed_artists(connection, per_cluster, min_degree, isolated)
+        known = set(query.corpus_keys(connection))
     if not seed_rows:
         typer.echo("no seeds: run `discolab derive` first", err=True)
         raise typer.Exit(code=2)
@@ -399,7 +392,7 @@ def expand(
     dirty: list[tuple[str, str]] = []
     # Flushed as it goes. Held to the end, a run that takes twenty minutes shows
     # an unchanged graph until it finishes, which looks the same as being stuck.
-    with store.connect(settings) as driver:
+    with store.connect(settings) as connection:
         for position, seed in enumerate(seed_rows, start=1):
             for suggestion in expander.similar(seed["name"]):
                 found += 1
@@ -426,15 +419,15 @@ def expand(
                     }
                     dirty.append(pair)
             if position % 100 == 0:
-                load.write_expansion(driver, database, [fresh[pair] for pair in dirty])
+                load.write_expansion(connection, [fresh[pair] for pair in dirty])
                 dirty = []
                 typer.echo(f"  expanded {position}/{len(seed_rows)}", err=True)
-        load.write_expansion(driver, database, [fresh[pair] for pair in dirty])
+        load.write_expansion(connection, [fresh[pair] for pair in dirty])
 
     share = f"{linked / found:.0%}" if found else "n/a"
     fresh_count = sum(1 for row in fresh.values() if row["external"])
-    with store.connect(settings) as driver:
-        dropped = load.drop_single_seed_artists(driver, database)
+    with store.connect(settings) as connection:
+        dropped = load.drop_single_seed_artists(connection)
 
     typer.echo(f"suggestions from {len(seed_rows)} seeds: {found}")
     typer.echo(f"links between your own artists: {linked} ({share})")
@@ -460,9 +453,8 @@ def clusters(
 ) -> None:
     """List the taste clusters, and optionally build a page for each."""
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        rows = query.clusters(driver, database, limit)
+    with store.connect(settings) as connection:
+        rows = query.clusters(connection, limit)
         if not rows:
             typer.echo("no clusters: run `discolab derive` first", err=True)
             raise typer.Exit(code=2)
@@ -471,12 +463,12 @@ def clusters(
                 typer.echo(f"{row['cluster']:>4}  {row['size']:>5}  {', '.join(row['styles'][:4])}")
                 typer.echo(f"      {', '.join(row['members'][:5])}")
             return
-        titles = query.library_titles(driver, database)
+        titles = query.library_titles(connection)
         videos = {} if refresh else load_video_cache(cache)
         built: list[int] = []
         for row in rows:
             cluster = row["cluster"]
-            candidates = query.cluster_frontier(driver, database, cluster, per_cluster)
+            candidates = query.cluster_frontier(connection, cluster, per_cluster)
             if not candidates:
                 continue
             if youtube:
@@ -485,8 +477,8 @@ def clusters(
                         videos[candidate["name"]] = resolve_artist(candidate["name"])
                         time.sleep(0.4)
             keys = [c["key"] for c in candidates]
-            sources = query.artist_sources(driver, database, keys)
-            tempo = query.artist_tempo(driver, database, keys)
+            sources = query.artist_sources(connection, keys)
+            tempo = query.artist_tempo(connection, keys)
             nav = f'<p><a href="index.html">all clusters</a> · cluster {cluster}</p>'
             page = build_page(
                 [
@@ -533,30 +525,27 @@ def clusters(
 def prune(
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
 ) -> None:
-    """Remove artists and labels left with no relationships at all.
+    """Remove artists left with no tracks, credits, tags or edges.
 
     A failed expansion or a cleared edge leaves nodes behind, and the
     enrichment walks them, spending API calls on names that cannot appear on a
     page because nothing connects to them.
     """
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        counts = query.orphan_counts(driver, database)
-        if not any(counts.values()):
+    with store.connect(settings) as connection:
+        orphans = store.orphan_count(connection)
+        if not orphans:
             typer.echo("nothing orphaned")
             return
-        for label, count in counts.items():
-            typer.echo(f"  {label}: {count}")
+        typer.echo(f"  artists: {orphans}")
         if not yes:
             typer.confirm("delete them?", abort=True)
-        removed = store.delete_orphans(driver, database)
-    for label, count in removed.items():
-        typer.echo(f"removed {count} {label}")
+        removed = store.delete_orphans(connection)
+    typer.echo(f"removed {removed} artists")
 
 
-def _explain_empty(driver, database: str) -> None:
-    summary = query.stats(driver, database)
+def _explain_empty(connection) -> None:
+    summary = query.stats(connection)
     typer.echo("no candidates.")
     typer.echo(
         f"  artists {summary['artists']}, connected {summary['connected_artists']}, "
@@ -708,32 +697,31 @@ def check(
 ) -> None:
     """Write a local listening page, with a counter for the kill criterion."""
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
+    with store.connect(settings) as connection:
         if cluster >= 0 and periphery:
-            rows = query.cluster_periphery(driver, database, cluster, limit)
+            rows = query.cluster_periphery(connection, cluster, limit)
             source = "bridge"
         elif cluster >= 0:
-            rows = query.cluster_frontier(driver, database, cluster, limit)
+            rows = query.cluster_frontier(connection, cluster, limit)
             source = "external"
         elif source == "external":
-            rows = query.external_candidates(driver, database, limit, min_areas)
+            rows = query.external_candidates(connection, limit, min_areas)
         else:
-            rows = query.bridge_candidates(driver, database, limit, min_degree, 0.0)
+            rows = query.bridge_candidates(connection, limit, min_degree, 0.0)
         if not rows:
-            _explain_empty(driver, database)
+            _explain_empty(connection)
             if source == "external":
                 typer.echo("  for external candidates run `discolab expand` first")
             raise typer.Exit(code=0)
         keys = [row["key"] for row in rows]
         owned = (
-            query.owned_tracks_for(driver, database, keys, max(tracks, 40))
+            query.owned_tracks_for(connection, keys, max(tracks, 40))
             if source == "bridge"
             else {}
         )
-        titles = query.library_titles(driver, database)
-        sources = query.artist_sources(driver, database, keys)
-        tempo = query.artist_tempo(driver, database, keys)
+        titles = query.library_titles(connection)
+        sources = query.artist_sources(connection, keys)
+        tempo = query.artist_tempo(connection, keys)
 
     videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
     if youtube:
@@ -814,18 +802,14 @@ def tags(
         typer.echo("set LASTFM_API_KEY in .env", err=True)
         raise typer.Exit(code=2)
 
-    with store.connect(settings) as driver:
-        rows = driver.execute_query(
+    with store.connect(settings) as connection:
+        rows = connection.execute(
             """
-            MATCH (a:Artist)
-            WHERE a.community IS NOT NULL AND a.community >= 0
-              AND size(coalesce(a.styles, [])) = 0
-              AND coalesce(a.lastfm, false) = false
-            RETURN a.key AS key, a.name AS name
-            ORDER BY coalesce(a.degree, 0) DESC, a.name
-            """,
-            database_=settings.neo4j_database,
-        ).records
+            SELECT key, name FROM artist
+            WHERE community >= 0 AND styles = '[]' AND lastfm = 0
+            ORDER BY degree DESC, name
+            """
+        ).fetchall()
     if limit:
         rows = rows[:limit]
     if not rows:
@@ -839,7 +823,7 @@ def tags(
     found = tagged = failed = 0
     # Flushed as it goes. A run of twelve thousand requests held to the end shows
     # an unchanged graph for an hour and loses everything if it stops.
-    with store.connect(settings) as driver:
+    with store.connect(settings) as connection:
         for position, row in enumerate(rows, start=1):
             try:
                 names = tagger.tags(row["name"])
@@ -857,12 +841,12 @@ def tags(
             pending.append({"key": row["key"], "styles": names})
             if len(pending) >= 200:
                 if not dry_run:
-                    load.write_lastfm_tags(driver, settings.neo4j_database, pending)
+                    load.write_lastfm_tags(connection, pending)
                 pending = []
             if position % 500 == 0:
                 typer.echo(f"  {position}/{len(rows)} · {tagged} with tags", err=True)
         if pending and not dry_run:
-            load.write_lastfm_tags(driver, settings.neo4j_database, pending)
+            load.write_lastfm_tags(connection, pending)
 
     typer.echo(
         f"asked {found:,} · {tagged:,} had genre tags · {failed:,} failed"
@@ -885,75 +869,66 @@ def map_page(
 ) -> None:
     """Draw the taste graph as a heat map, suggestions scoped to a region."""
     settings = _settings([])
-    with store.connect(settings) as driver:
-        database = settings.neo4j_database
-        sizes = driver.execute_query(
+    with store.connect(settings) as connection:
+        sizes = connection.execute(
             """
-            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
-            RETURN a.community AS key, count(*) AS size,
-                   sum(CASE WHEN size(coalesce(a.styles, [])) > 0 THEN 1 ELSE 0 END) AS tagged,
-                   sum(CASE WHEN coalesce(a.external, false) THEN 0 ELSE 1 END) AS corpus
-            """,
-            database_=database,
-        ).records
-        named = driver.execute_query(
+            SELECT community AS key, count(*) AS size,
+                   sum(styles <> '[]') AS tagged, sum(external = 0) AS corpus
+            FROM artist WHERE community >= 0
+            GROUP BY community
             """
-            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
-            RETURN a.community AS key, a.name AS name,
-                   coalesce(a.external, false) AS external,
-                   coalesce(a.degree, 0) AS degree
-            """,
-            database_=database,
-        ).records
-        own_tags = driver.execute_query(
+        ).fetchall()
+        named = connection.execute(
+            "SELECT community AS key, name, external, degree FROM artist WHERE community >= 0"
+        ).fetchall()
+        own_tags = connection.execute(
             """
-            MATCH (a:Artist)-[:TAGGED]->(g:Tag)
-            WHERE a.community IS NOT NULL AND a.community >= 0
-            RETURN a.community AS key, g.key AS tag, count(DISTINCT a) AS artists
-            """,
-            database_=database,
-        ).records
-        members = driver.execute_query(
+            SELECT a.community AS key, g.tag, count(*) AS artists
+            FROM artist_tag g JOIN artist a ON a.key = g.artist_key
+            WHERE a.community >= 0
+            GROUP BY a.community, g.tag
             """
-            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
-            UNWIND coalesce(a.styles, []) AS style
-            RETURN a.community AS key, style
-            """,
-            database_=database,
-        ).records
-        links = driver.execute_query(
+        ).fetchall()
+        members = connection.execute(
             """
-            MATCH (a:Artist)-[r]->(b:Artist)
-            WHERE a.community IS NOT NULL AND b.community IS NOT NULL
-              AND a.community >= 0 AND b.community >= 0 AND a.community <> b.community
-            RETURN a.community AS a, b.community AS b,
-                   sum(CASE WHEN type(r) = 'CO_OCCURS' THEN 2 ELSE 1 END) AS weight
-            """,
-            database_=database,
-        ).records
-        candidates = driver.execute_query(
+            SELECT a.community AS key, style.value AS style
+            FROM artist a, json_each(a.styles) AS style
+            WHERE a.community >= 0
             """
-            MATCH (seed:Artist)-[:SIMILAR_TO]->(ext:Artist)
-            WHERE seed.community IS NOT NULL AND seed.community >= 0
-              AND coalesce(ext.external, false)
-            WITH ext, seed.community AS cluster, count(DISTINCT seed) AS agreement
-            RETURN ext.key AS key, ext.name AS name,
-                   coalesce(ext.styles, []) AS styles,
-                   coalesce(ext.labels, []) AS labels,
-                   coalesce(ext.url, '') AS url,
-                   cluster, agreement
-            """,
-            database_=database,
-        ).records
-        cluster_labels = driver.execute_query(
+        ).fetchall()
+        links = connection.execute(
             """
-            MATCH (a:Artist) WHERE a.community IS NOT NULL AND a.community >= 0
-              AND size(coalesce(a.labels, [])) > 0
-            UNWIND a.labels AS name
-            RETURN a.community AS key, name, count(*) AS n
-            """,
-            database_=database,
-        ).records
+            SELECT x.community AS a, y.community AS b, sum(weight) AS weight
+            FROM (
+                SELECT seed_key AS source, artist_key AS target, 1 AS weight FROM similar
+                UNION ALL SELECT a, b, 1 FROM collaborates
+                UNION ALL SELECT a, b, 2 FROM co_occurs
+            )
+            JOIN artist x ON x.key = source
+            JOIN artist y ON y.key = target
+            WHERE x.community >= 0 AND y.community >= 0 AND x.community <> y.community
+            GROUP BY x.community, y.community
+            """
+        ).fetchall()
+        candidates = connection.execute(
+            """
+            SELECT e.key, e.name, e.styles, e.labels, coalesce(e.url, '') AS url,
+                   s.community AS cluster, count(*) AS agreement
+            FROM similar r
+            JOIN artist s ON s.key = r.seed_key
+            JOIN artist e ON e.key = r.artist_key
+            WHERE s.community >= 0 AND e.external = 1
+            GROUP BY e.key, s.community
+            """
+        ).fetchall()
+        cluster_labels = connection.execute(
+            """
+            SELECT a.community AS key, label.value AS name, count(*) AS n
+            FROM artist a, json_each(a.labels) AS label
+            WHERE a.community >= 0
+            GROUP BY a.community, label.value
+            """
+        ).fetchall()
     genres: dict[int, dict[str, int]] = {}
     for row in members:
         genres.setdefault(row["key"], {})
@@ -974,8 +949,8 @@ def map_page(
             {
                 "name": row["name"],
                 "url": row["url"],
-                "styles": list(row["styles"]),
-                "labels": list(row["labels"]),
+                "styles": json.loads(row["styles"]),
+                "labels": json.loads(row["labels"]),
                 "clusters": {},
             },
         )
