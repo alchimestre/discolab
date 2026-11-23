@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Build a taste graph from local music metadata and query the blank space between clusters"
 requires-python = ">=3.11"
 dependencies = [
-    "neo4j>=5.26",
     "mutagen>=1.47",
     "networkx>=3.3",
     "typer>=0.15",
