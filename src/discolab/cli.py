@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import concurrent.futures
-import json
-import math
 import os
 
 import secrets
 import subprocess
-import threading
-import time
 import urllib.parse
 import webbrowser
 from datetime import datetime, timedelta, timezone
@@ -16,25 +11,10 @@ from pathlib import Path
 
 import typer
 
-from .check import (
-    Candidate,
-    Video,
-    build_cluster_index,
-    build_page,
-    load_video_cache,
-    resolve_artist,
-    save_video_cache,
-    serve_directory,
-    write_page,
-)
 from .config import Settings, load_env_file
 from .rekordbox import RekordboxError, RekordboxReader, join_key
 from .expand import LastfmSimilarExpander
-from .map_view import Cluster
-from .map_view import ARTIST_LABELS
-from .map_view import layout as layout_clusters
-from .map_view import radius_for
-from .map_view import render_page
+from .webapp import make_server
 from .graph import derive, load, query, store
 from .model import RawTrack
 from .providers import (
@@ -311,16 +291,11 @@ def guess(
         "--isolated",
         help="Also seed from this many artists nothing else can reach, best known first.",
     ),
-    limit: int = typer.Option(25, "--limit", help="Candidates on the page."),
-    out: Path = typer.Option(Path("out/checklist.html"), "--out", help="Page to write."),
-    youtube: bool = typer.Option(
-        True, "--youtube/--no-youtube", help="Resolve one embed per candidate."
-    ),
-    serve: bool = typer.Option(
-        True, "--serve/--no-serve", help="Serve the page, which the embeds require."
+    serve_app: bool = typer.Option(
+        True, "--serve/--no-serve", help="Open the app once the graph is ready."
     ),
 ) -> None:
-    """Derive taste communities, expand past them, write the listening page."""
+    """Derive taste communities, expand past them, open the app."""
     derive_edges(resolution=1.0, min_artists=2, max_artists=80)
     expand(
         per_cluster=per_cluster,
@@ -332,21 +307,8 @@ def guess(
     # Similarity edges change who sits next to whom, so communities are
     # computed again before anything is ranked.
     derive_edges(resolution=1.0, min_artists=2, max_artists=80)
-    check(
-        limit=limit,
-        min_degree=2,
-        tracks=6,
-        out=out,
-        youtube=youtube,
-        cache=Path("out/videos.json"),
-        refresh=False,
-        source="external",
-        min_areas=2,
-        cluster=-1,
-        periphery=False,
-        serve=serve,
-        open_browser=serve,
-    )
+    if serve_app:
+        serve(port=DEFAULT_PORT, open_browser=True)
 
 
 @app.command()
@@ -438,87 +400,17 @@ def expand(
 @app.command()
 def clusters(
     limit: int = typer.Option(40, "--limit", help="Clusters to list."),
-    pages: bool = typer.Option(
-        False, "--pages", help="Write an index and one frontier page per cluster."
-    ),
-    per_cluster: int = typer.Option(12, "--per-cluster", help="Candidates per cluster page."),
-    out: Path = typer.Option(Path("out"), "--out", help="Where the pages go."),
-    youtube: bool = typer.Option(
-        True, "--youtube/--no-youtube", help="Resolve an embed per candidate."
-    ),
-    cache: Path = typer.Option(
-        Path("out/videos.json"), "--cache", help="Resolved videos, reused across runs."
-    ),
-    refresh: bool = typer.Option(False, "--refresh", help="Ignore the cache."),
 ) -> None:
-    """List the taste clusters, and optionally build a page for each."""
+    """List the taste clusters."""
     settings = _settings([])
     with store.connect(settings) as connection:
         rows = query.clusters(connection, limit)
         if not rows:
             typer.echo("no clusters: run `discolab derive` first", err=True)
             raise typer.Exit(code=2)
-        if not pages:
-            for row in rows:
-                typer.echo(f"{row['cluster']:>4}  {row['size']:>5}  {', '.join(row['styles'][:4])}")
-                typer.echo(f"      {', '.join(row['members'][:5])}")
-            return
-        titles = query.library_titles(connection)
-        videos = {} if refresh else load_video_cache(cache)
-        built: list[int] = []
         for row in rows:
-            cluster = row["cluster"]
-            candidates = query.cluster_frontier(connection, cluster, per_cluster)
-            if not candidates:
-                continue
-            if youtube:
-                for candidate in candidates:
-                    if candidate["name"] not in videos:
-                        videos[candidate["name"]] = resolve_artist(candidate["name"])
-                        time.sleep(0.4)
-            keys = [c["key"] for c in candidates]
-            sources = query.artist_sources(connection, keys)
-            tempo = query.artist_tempo(connection, keys)
-            nav = f'<p><a href="index.html">all clusters</a> · cluster {cluster}</p>'
-            page = build_page(
-                [
-                    Candidate(
-                        name=c["name"],
-                        community=cluster,
-                        component=0,
-                        component_size=0,
-                        degree=c.get("seed_count", 0),
-                        bridge_score=c.get("best_score", 0.0),
-                        videos=tuple(videos.get(c["name"], ())),
-                        tracks=(),
-                        known_titles=(),
-                        seeds=tuple(c.get("seed_names") or ()),
-                        external=True,
-                        source_kind="cluster",
-                        seed_count=c.get("seed_count", 0),
-                        areas=1,
-                        styles=tuple(sources.get(c["key"], {}).get("styles", ())),
-                        labels=tuple(sources.get(c["key"], {}).get("labels", ())),
-                        bpm_low=tempo.get(c["key"], {}).get("low"),
-                        bpm_high=tempo.get(c["key"], {}).get("high"),
-                        musical_keys=tuple(tempo.get(c["key"], {}).get("musical_keys") or ()),
-                    )
-                    for c in candidates
-                ],
-                titles,
-                title=f"cluster {cluster} frontier",
-                nav=nav,
-            )
-            write_page(page, out / f"cluster-{cluster}.html")
-            built.append(cluster)
-        if youtube:
-            save_video_cache(cache, videos)
-        write_page(
-            build_cluster_index(rows, built),
-            out / "index.html",
-        )
-    typer.echo(f"wrote {out}/index.html and {len(built)} cluster pages")
-    typer.echo(f"serve with: uv run discolab check --no-youtube --serve")
+            typer.echo(f"{row['cluster']:>4}  {row['size']:>5}  {', '.join(row['styles'][:4])}")
+            typer.echo(f"      {', '.join(row['members'][:5])}")
 
 
 @app.command()
@@ -646,146 +538,29 @@ def _login_via_container(client: SpotifyClient, redirect: str) -> None:
     typer.echo(f"logged in, refresh token cached in {TOKEN_PATH}")
 
 
+DEFAULT_PORT = 8765
+
+
 @app.command()
-def check(
-    limit: int = typer.Option(25, "--limit", help="Candidates to include."),
-    min_degree: int = typer.Option(2, "--min-degree", help="Minimum artist degree."),
-    tracks: int = typer.Option(6, "--tracks", help="Owned tracks to list per artist."),
-    out: Path = typer.Option(Path("out/checklist.html"), "--out", help="Page to write."),
-    youtube: bool = typer.Option(
-        True,
-        "--youtube/--no-youtube",
-        help="Resolve one YouTube embed per artist. The only step that uses the network.",
-    ),
-    cache: Path = typer.Option(
-        Path("out/videos.json"), "--cache", help="Resolved videos, reused to avoid re-searching."
-    ),
-    refresh: bool = typer.Option(
-        False, "--refresh", help="Ignore the cache and search again."
-    ),
-    source: str = typer.Option(
-        "bridge",
-        "--source",
-        help="bridge ranks your own artists; external lists artists you do not have.",
-    ),
-    min_areas: int = typer.Option(
-        2,
-        "--min-areas",
-        min=2,
-        help="Require this many taste areas, each with at least two seeds naming the "
-        "artist. Ranking is by the weaker area's share of its seeds.",
-    ),
-    cluster: int = typer.Option(
-        -1,
-        "--cluster",
-        help="Scope the page to one cluster. -1 ranks across the whole taste.",
-    ),
-    periphery: bool = typer.Option(
-        False,
-        "--periphery",
-        help="With --cluster, show that cluster's own weakly connected artists instead "
-        "of its frontier.",
-    ),
-    serve: bool = typer.Option(
-        True,
-        "--serve/--no-serve",
-        help="Serve the page on localhost, which the embeds require.",
-    ),
+def serve(
+    port: int = typer.Option(DEFAULT_PORT, "--port", help="Port on localhost."),
     open_browser: bool = typer.Option(
-        True, "--open/--no-open", help="Open the served page in a browser."
+        True, "--open/--no-open", help="Open the app in a browser."
     ),
 ) -> None:
-    """Write a local listening page, with a counter for the kill criterion."""
-    settings = _settings([])
-    with store.connect(settings) as connection:
-        if cluster >= 0 and periphery:
-            rows = query.cluster_periphery(connection, cluster, limit)
-            source = "bridge"
-        elif cluster >= 0:
-            rows = query.cluster_frontier(connection, cluster, limit)
-            source = "external"
-        elif source == "external":
-            rows = query.external_candidates(connection, limit, min_areas)
-        else:
-            rows = query.bridge_candidates(connection, limit, min_degree, 0.0)
-        if not rows:
-            _explain_empty(connection)
-            if source == "external":
-                typer.echo("  for external candidates run `discolab expand` first")
-            raise typer.Exit(code=0)
-        keys = [row["key"] for row in rows]
-        owned = (
-            query.owned_tracks_for(connection, keys, max(tracks, 40))
-            if source == "bridge"
-            else {}
-        )
-        titles = query.library_titles(connection)
-        sources = query.artist_sources(connection, keys)
-        tempo = query.artist_tempo(connection, keys)
-
-    videos: dict[str, list[Video]] = {} if refresh else load_video_cache(cache)
-    if youtube:
-        pending = [row for row in rows if row["name"] not in videos]
-        if videos:
-            typer.echo(f"reusing {len(videos)} cached resolutions")
-        for position, row in enumerate(pending, start=1):
-            titles = [track["title"] for track in owned.get(row["key"], [])]
-            videos[row["name"]] = resolve_artist(row["name"], titles)
-            typer.echo(f"  resolved {position}/{len(pending)}", err=True)
-            time.sleep(0.4)
-        save_video_cache(cache, videos)
-        with_track = sum(1 for row in rows if videos.get(row["name"]))
-        typer.echo(f"artists with a track resolved: {with_track}/{len(rows)}")
-
-    candidates = [
-        Candidate(
-            name=row["name"],
-            community=row.get("community", 0),
-            component=row.get("component", 0),
-            component_size=row.get("component_size", 0),
-            degree=row.get("degree", 0),
-            bridge_score=row.get("best_score", row.get("bridge_score", 0.0)),
-            videos=tuple(videos.get(row["name"], ())),
-            tracks=tuple(owned.get(row["key"], [])[:tracks]),
-            known_titles=tuple(
-                (track["title"], track["plays"]) for track in owned.get(row["key"], [])
-            ),
-            seeds=tuple(row.get("seed_names") or row.get("via") or ()),
-            external=source in ("external", "labels"),
-            source_kind="cluster" if cluster >= 0 else source,
-            seed_count=row.get("seed_count", row.get("labels", 0)),
-            areas=row.get("areas", 0),
-            styles=tuple(sources.get(row["key"], {}).get("styles", ())),
-            labels=tuple(sources.get(row["key"], {}).get("labels", ())),
-            bpm_low=tempo.get(row["key"], {}).get("low"),
-            bpm_high=tempo.get(row["key"], {}).get("high"),
-            musical_keys=tuple(tempo.get(row["key"], {}).get("musical_keys") or ()),
-        )
-        for row in rows
-    ]
-    path = write_page(build_page(candidates, titles), out)
-    typer.echo(f"wrote {path}")
-
-    if not serve:
-        typer.echo(f"open file://{path.resolve()}")
-        # Not gated on youtube: cached resolutions still render as embeds, so a
-        # page built with --no-youtube can carry them and fail the same way.
-        typer.echo(
-            "note: file:// pages cannot play the embeds, use --serve", err=True
-        )
-        return
-
-    url, server = serve_directory(path.parent, path.name)
+    """Serve the discoveries, the area map and the area pages on localhost."""
+    server = make_server(_settings([]), port)
+    url = f"http://127.0.0.1:{server.server_port}/"
     typer.echo(f"serving {url}")
     typer.echo("ctrl-c to stop")
     if open_browser:
         webbrowser.open(url)
     try:
-        threading.Event().wait()
+        server.serve_forever()
     except KeyboardInterrupt:
         typer.echo("stopped")
     finally:
-        server.shutdown()
+        server.server_close()
 
 
 @app.command()
@@ -852,188 +627,6 @@ def tags(
         f"asked {found:,} · {tagged:,} had genre tags · {failed:,} failed"
         + (" (dry run, nothing written)" if dry_run else "")
     )
-
-
-@app.command("map")
-def map_page(
-    out: Path = typer.Option(Path("out/map.html"), "--out", help="Page to write."),
-    min_size: int = typer.Option(
-        5,
-        "--min-size",
-        help="Hide clusters smaller than this. The similarity graph has a long "
-        "tail of one- and two-artist groups with no genre to name them by.",
-    ),
-    serve: bool = typer.Option(
-        True, "--serve/--no-serve", help="Serve the page."
-    ),
-) -> None:
-    """Draw the taste graph as a heat map, suggestions scoped to a region."""
-    settings = _settings([])
-    with store.connect(settings) as connection:
-        sizes = connection.execute(
-            """
-            SELECT community AS key, count(*) AS size,
-                   sum(styles <> '[]') AS tagged, sum(external = 0) AS corpus
-            FROM artist WHERE community >= 0
-            GROUP BY community
-            """
-        ).fetchall()
-        named = connection.execute(
-            "SELECT community AS key, name, external, degree FROM artist WHERE community >= 0"
-        ).fetchall()
-        own_tags = connection.execute(
-            """
-            SELECT a.community AS key, g.tag, count(*) AS artists
-            FROM artist_tag g JOIN artist a ON a.key = g.artist_key
-            WHERE a.community >= 0
-            GROUP BY a.community, g.tag
-            """
-        ).fetchall()
-        members = connection.execute(
-            """
-            SELECT a.community AS key, style.value AS style
-            FROM artist a, json_each(a.styles) AS style
-            WHERE a.community >= 0
-            """
-        ).fetchall()
-        links = connection.execute(
-            """
-            SELECT x.community AS a, y.community AS b, sum(weight) AS weight
-            FROM (
-                SELECT seed_key AS source, artist_key AS target, 1 AS weight FROM similar
-                UNION ALL SELECT a, b, 1 FROM collaborates
-                UNION ALL SELECT a, b, 2 FROM co_occurs
-            )
-            JOIN artist x ON x.key = source
-            JOIN artist y ON y.key = target
-            WHERE x.community >= 0 AND y.community >= 0 AND x.community <> y.community
-            GROUP BY x.community, y.community
-            """
-        ).fetchall()
-        candidates = connection.execute(
-            """
-            SELECT e.key, e.name, e.styles, e.labels, coalesce(e.url, '') AS url,
-                   s.community AS cluster, count(*) AS agreement
-            FROM similar r
-            JOIN artist s ON s.key = r.seed_key
-            JOIN artist e ON e.key = r.artist_key
-            WHERE s.community >= 0 AND e.external = 1
-            GROUP BY e.key, s.community
-            """
-        ).fetchall()
-        cluster_labels = connection.execute(
-            """
-            SELECT a.community AS key, label.value AS name, count(*) AS n
-            FROM artist a, json_each(a.labels) AS label
-            WHERE a.community >= 0
-            GROUP BY a.community, label.value
-            """
-        ).fetchall()
-    genres: dict[int, dict[str, int]] = {}
-    for row in members:
-        genres.setdefault(row["key"], {})
-        genres[row["key"]][row["style"]] = genres[row["key"]].get(row["style"], 0) + 1
-
-    own_tags_by_cluster: dict[int, dict[str, int]] = {}
-    for row in own_tags:
-        own_tags_by_cluster.setdefault(row["key"], {})
-        own_tags_by_cluster[row["key"]][row["tag"]] = row["artists"]
-
-    # One entry per artist, carrying every cluster that points at it. Cutting this
-    # per cluster was destroying the bridges: 694 artists are pointed at by more
-    # than one cluster, and keeping only each cluster's strongest forty left six.
-    catalogue: dict[str, dict] = {}
-    for row in candidates:
-        entry = catalogue.setdefault(
-            row["key"],
-            {
-                "name": row["name"],
-                "url": row["url"],
-                "styles": json.loads(row["styles"]),
-                "labels": json.loads(row["labels"]),
-                "clusters": {},
-            },
-        )
-        entry["clusters"][str(row["cluster"])] = row["agreement"]
-    candidate_rows = list(catalogue.values())
-
-    labels_here: dict[int, dict[str, int]] = {}
-    for row in cluster_labels:
-        labels_here.setdefault(row["key"], {})
-        labels_here[row["key"]][row["name"]] = labels_here[row["key"]].get(row["name"], 0) + row["n"]
-
-    # Your own artists first, then the most connected. The rank decides which
-    # names survive the zoom tiers, so those that appear first are the ones the
-    # region is built around.
-    own: dict[int, list[tuple[int, int, str]]] = {}
-    for row in named:
-        own.setdefault(row["key"], []).append(
-            (1 if row["external"] else 0, -row["degree"], row["name"])
-        )
-
-    clusters = [
-        Cluster(
-            key=row["key"],
-            size=row["size"],
-            corpus=row["corpus"],
-            genres=tuple(
-                sorted(
-                    genres.get(row["key"], {}).items(),
-                    key=lambda item: (-item[1], item[0]),
-                )
-            ),
-            tagged=row["tagged"],
-            tags=tuple(
-                sorted(
-                    own_tags_by_cluster.get(row["key"], {}).items(),
-                    key=lambda item: (-item[1], item[0]),
-                )[:3]
-            ),
-            labels=tuple(
-                sorted(
-                    labels_here.get(row["key"], {}).items(),
-                    key=lambda item: (-item[1], item[0]),
-                )[:10]
-            ),
-            artists=tuple(
-                name for _, _, name in sorted(own.get(row["key"], []))[:ARTIST_LABELS]
-            ),
-        )
-        for row in sizes
-    ]
-    clusters.sort(key=lambda cluster: (-cluster.size, cluster.key))
-    hidden = sum(1 for cluster in clusters if cluster.size < min_size)
-    clusters = [cluster for cluster in clusters if cluster.size >= min_size]
-    biggest = max((cluster.size for cluster in clusters), default=1)
-    for cluster in clusters:
-        cluster.r = radius_for(cluster.size, biggest)
-
-    weights = [(row["a"], row["b"], row["weight"]) for row in links]
-    layout_clusters(clusters, weights)
-
-    page = render_page("Your taste, as clusters", clusters, candidate_rows)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(page, encoding="utf-8")
-    covered = sum(1 for cluster in clusters if cluster.genres)
-    bridged = sum(1 for row in candidate_rows if len(row["clusters"]) > 1)
-    typer.echo(
-        f"wrote {out} · {len(clusters)} clusters · "
-        f"{covered} of them have a genre recorded · "
-        f"{len(candidate_rows):,} candidates, {bridged:,} of them touching "
-        f"more than one cluster"
-        + (f" · {hidden} groups under {min_size} artists hidden" if hidden else "")
-    )
-
-    if serve:
-        url, _ = serve_directory(out.parent, out.name)
-        typer.echo(f"serving {url}")
-        typer.echo("ctrl-c to stop")
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            typer.echo("stopped")
-    else:
-        typer.echo(f"open file://{out.resolve()}")
 
 
 def _settings(roots: list[Path]) -> Settings:

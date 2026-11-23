@@ -1,0 +1,66 @@
+:root {
+  color-scheme: light dark;
+  --quiet: color-mix(in srgb, CanvasText 60%, transparent);
+  --line: color-mix(in srgb, CanvasText 14%, transparent);
+  --raised: color-mix(in srgb, CanvasText 4%, transparent);
+  --tint: CanvasText;
+}
+* { box-sizing: border-box; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0; }
+a { color: inherit; }
+
+header {
+  position: sticky; top: 0; z-index: 2; display: flex; gap: 28px; align-items: baseline;
+  padding: 12px 24px; background: Canvas; border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; text-decoration: none; letter-spacing: .02em; }
+nav { display: flex; gap: 18px; }
+nav a { text-decoration: none; color: var(--quiet); padding-bottom: 2px; }
+nav a[aria-current] { color: CanvasText; border-bottom: 2px solid currentColor; }
+
+main { max-width: 1040px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 24px; margin: 8px 0 4px; }
+h1.tinted { border-left: 6px solid var(--tint); padding-left: 12px; }
+h2 { font-size: 18px; margin: 0; }
+h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--quiet); margin: 32px 0 8px; }
+.lede { color: var(--quiet); margin: 0 0 24px; max-width: 62ch; }
+.quiet { color: var(--quiet); font-size: 13px; margin: 2px 0; }
+
+.card {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start;
+  padding: 16px; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--raised);
+}
+.rank { color: var(--quiet); font-weight: 400; font-variant-numeric: tabular-nums; margin-right: 6px; }
+.card h2 a { text-decoration: none; }
+.card h2 a:hover { text-decoration: underline; }
+.votes { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.chip {
+  display: inline-block; padding: 1px 10px; border-radius: 12px; font-size: 13px; text-decoration: none;
+  border: 1px solid var(--tint); background: color-mix(in srgb, var(--tint) 16%, transparent);
+}
+.chip:hover { background: color-mix(in srgb, var(--tint) 32%, transparent); }
+/* height: auto, or the height attribute YouTube sets on its iframe overrides the ratio. */
+.player .frame { width: 100%; height: auto; aspect-ratio: 16 / 9; border: 0; border-radius: 6px; display: block; }
+
+button {
+  font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: Canvas; color: CanvasText;
+}
+button:hover { border-color: currentColor; }
+.listen { width: 100%; aspect-ratio: 16 / 9; font-size: 16px; }
+.more { display: block; margin: 16px auto; }
+.members { column-width: 200px; column-gap: 24px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
+
+svg.map { width: 100%; height: calc(100vh - 190px); min-height: 420px; display: block; }
+.map line { stroke: currentColor; stroke-opacity: .16; stroke-linecap: round; }
+.map circle { fill: var(--tint); fill-opacity: .3; stroke: var(--tint); stroke-width: 1.5; }
+.map a:hover circle, .map a:focus circle { fill-opacity: .55; }
+.map text { fill: CanvasText; font-size: 11px; text-anchor: middle; paint-order: stroke; stroke: Canvas; stroke-width: 3px; pointer-events: none; }
+.map text.style { font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--quiet); }
+.legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--tint); margin-right: 6px; }
+
+@media (max-width: 760px) {
+  .card { grid-template-columns: 1fr; }
+}

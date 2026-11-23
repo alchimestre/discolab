@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
 
 from .store import TABLES, keys_json
 
 EDGE_TABLES = tuple(table for table in TABLES if table not in ("artist", "track", "container"))
+# One number for both: the app looks up every area a discovery names.
+MIN_AREA_SIZE = 5
 
 
 def bridge_candidates(
@@ -131,22 +132,6 @@ def seed_artists(
     return seeds + _dicts(lonely)
 
 
-def artist_sources(connection: sqlite3.Connection, keys: Sequence[str]) -> dict[str, dict]:
-    """Styles and labels per artist key, for whatever has been fetched so far."""
-    rows = connection.execute(
-        "SELECT key, styles, labels FROM artist WHERE key IN (SELECT value FROM json_each(?))",
-        (keys_json(keys),),
-    )
-    return {
-        row["key"]: {
-            "key": row["key"],
-            "styles": json.loads(row["styles"]),
-            "labels": json.loads(row["labels"]),
-        }
-        for row in rows
-    }
-
-
 def clusters(connection: sqlite3.Connection, limit: int = 40, sample: int = 6) -> list[dict]:
     """The taste clusters, largest first, with their members and usual styles."""
     found: dict[int, dict] = {}
@@ -182,50 +167,35 @@ def clusters(connection: sqlite3.Connection, limit: int = 40, sample: int = 6) -
     return list(found.values())
 
 
-def cluster_frontier(
-    connection: sqlite3.Connection, cluster: int, limit: int = 25
-) -> list[dict]:
-    """Artists outside the corpus reached from one cluster's seeds.
-
-    Scoping to a cluster answers a different question from the global ranking:
-    not what the whole taste agrees on, but what this corner of it leads to.
-    """
-    rows = connection.execute(
+def areas(connection: sqlite3.Connection, min_size: int = MIN_AREA_SIZE) -> list[dict]:
+    """The taste areas, largest first, each with its artists most played first."""
+    found: dict[int, dict] = {}
+    for row in connection.execute(
         """
-        SELECT e.key, e.name, count(*) AS seed_count, max(r.score) AS best_score,
-               json_group_array(s.name) AS seed_names
-        FROM similar r
-        JOIN artist s ON s.key = r.seed_key
-        JOIN artist e ON e.key = r.artist_key
-        WHERE s.community = ? AND e.external = 1
-        GROUP BY e.key
-        ORDER BY best_score DESC, seed_count DESC
-        LIMIT ?
-        """,
-        (cluster, limit),
-    )
-    return [{**dict(row), "seed_names": json.loads(row["seed_names"])[:4]} for row in rows]
-
-
-def cluster_periphery(
-    connection: sqlite3.Connection, cluster: int, limit: int = 25
-) -> list[dict]:
-    """The cluster's own artists that barely connect to it.
-
-    A member with one edge sits at the edge of the taste rather than in it,
-    which is where something recognisable but rarely played tends to live.
-    """
-    return _dicts(
-        connection.execute(
-            """
-            SELECT key, name, community, degree, bridge_score FROM artist
-            WHERE community = ? AND external = 0
-            ORDER BY degree, name
-            LIMIT ?
-            """,
-            (cluster, limit),
+        SELECT a.area, a.name
+        FROM artist a LEFT JOIN track t ON t.artist_key = a.key
+        WHERE a.area >= 0
+        GROUP BY a.key
+        ORDER BY coalesce(sum(t.plays), 0) DESC, a.degree DESC, a.name
+        """
+    ):
+        entry = found.setdefault(
+            row["area"], {"area": row["area"], "artists": [], "styles": []}
         )
-    )
+        entry["artists"].append(row["name"])
+
+    for row in connection.execute(
+        """
+        SELECT a.area, style.value AS style, count(*) AS n
+        FROM artist a, json_each(a.styles) AS style
+        WHERE a.area >= 0
+        GROUP BY a.area, style.value
+        ORDER BY n DESC, style.value
+        """
+    ):
+        found[row["area"]]["styles"].append((row["style"], row["n"]))
+    kept = [entry for entry in found.values() if len(entry["artists"]) >= min_size]
+    return sorted(kept, key=lambda entry: (-len(entry["artists"]), entry["area"]))
 
 
 def track_paths(connection: sqlite3.Connection) -> list[dict]:
@@ -236,30 +206,11 @@ def track_paths(connection: sqlite3.Connection) -> list[dict]:
     )
 
 
-def artist_tempo(connection: sqlite3.Connection, keys: Sequence[str]) -> dict[str, dict]:
-    """Tempo range and keys per artist, from the tracks the library holds."""
-    rows = connection.execute(
-        """
-        SELECT artist_key AS key, count(*) AS tracks, min(bpm) AS low, max(bpm) AS high,
-               avg(bpm) AS mean, json_group_array(DISTINCT musical_key) AS musical_keys
-        FROM track
-        WHERE bpm IS NOT NULL AND artist_key IN (SELECT value FROM json_each(?))
-        GROUP BY artist_key
-        """,
-        (keys_json(keys),),
-    )
-    tempo = {}
-    for row in rows:
-        musical_keys = [key for key in json.loads(row["musical_keys"]) if key is not None]
-        tempo[row["key"]] = {**dict(row), "musical_keys": musical_keys[:4]}
-    return tempo
-
-
 def external_candidates(
     connection: sqlite3.Connection,
     limit: int = 25,
     min_areas: int = 2,
-    min_area_seeds: int = 5,
+    min_area_seeds: int = MIN_AREA_SIZE,
 ) -> list[dict]:
     """Artists from outside the corpus, ranked by the weaker of their two best areas.
 
@@ -305,8 +256,8 @@ def external_candidates(
                        sum(votes) OVER (PARTITION BY key) AS seed_count
                 FROM vote
             )
-            SELECT e.key, e.name, weaker.seed_count, weaker.areas,
-                   weaker.support AS balance,
+            SELECT e.key, e.name, e.url, e.styles, weaker.seed_count, weaker.areas,
+                   weaker.support AS balance, stronger.support AS stronger_support,
                    stronger.area AS stronger_area, weaker.area AS weaker_area
             FROM ranked weaker
             JOIN ranked stronger ON stronger.key = weaker.key AND stronger.position = 1
@@ -319,9 +270,19 @@ def external_candidates(
         )
     )
     for row in rows:
-        row["seed_names"] = _area_seed_names(
-            connection, row["key"], row.pop("stronger_area")
-        ) + _area_seed_names(connection, row["key"], row.pop("weaker_area"))
+        row["styles"] = json.loads(row["styles"])
+        best_two = (
+            (row.pop("stronger_area"), row.pop("stronger_support")),
+            (row.pop("weaker_area"), row["balance"]),
+        )
+        row["votes"] = [
+            {
+                "area": area,
+                "support": support,
+                "seeds": _area_seed_names(connection, row["key"], area),
+            }
+            for area, support in best_two
+        ]
     return rows
 
 
@@ -341,10 +302,6 @@ def _area_seed_names(
             (artist_key, area, count),
         )
     ]
-
-
-def library_titles(connection: sqlite3.Connection) -> list[str]:
-    return [row[0] for row in connection.execute("SELECT DISTINCT title FROM track")]
 
 
 def stats(connection: sqlite3.Connection) -> dict:

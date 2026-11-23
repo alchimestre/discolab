@@ -22,7 +22,7 @@ Three sources are aggregated into one graph: the audio files on disk, Last.fm sc
 | Step | Command | What it does |
 |---|---|---|
 | 1 | `discolab ingest` | Aggregate every source, resolve the names, load the graph, then attach rekordbox's BPM, keys and tags |
-| 2 | `discolab guess` | Derive taste communities, expand past them, write the page |
+| 2 | `discolab guess` | Derive taste communities, expand past them, open the app |
 | 3 | `discolab tags` | Last.fm's genre tags for the artists no tag has described |
 
 ```
@@ -40,9 +40,8 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 | `discolab derive` | Rebuild artist edges, communities and islands on their own |
 | `discolab expand` | Ask Last.fm for artists similar to each cluster centre |
 | `discolab tags` | Fill in Last.fm's genre tags where no other source has one |
-| `discolab check` | Write one listening page, scoped by cluster or by source |
-| `discolab clusters --pages` | One index page and one frontier page per cluster |
-| `discolab map` | Draw the graph as a heat map, suggestions scoped to a region |
+| `discolab serve` | Serve the app on `http://127.0.0.1:8765/` |
+| `discolab clusters` | List the taste clusters |
 | `discolab stats` | Node, edge and island counts |
 | `discolab prune` | Drop unplayed tracks and the artists left with none |
 | `discolab reset --yes` | Empty the database |
@@ -56,11 +55,11 @@ It is local and it costs nothing beyond one binary: no network, no account, and 
 
 | Written | From |
 |---|---|
-| `Track.bpm` | `djmdContent.BPM`, stored as a hundredth so 12700 is 127.00 |
-| `Track.musical_key` | `djmdContent.KeyID` through `djmdKey.ScaleName` |
-| `Track.rating`, `Track.dj_plays` | `djmdContent.Rating`, `DJPlayCount` |
-| `Tag` nodes, `(Track)-[:TAGGED]->(Tag)` | `djmdMyTag` through `djmdSongMyTag` |
-| `(Artist)-[:TAGGED {tracks}]->(Tag)` | the union of its tracks, weighted by count |
+| `track.bpm` | `djmdContent.BPM`, stored as a hundredth so 12700 is 127.00 |
+| `track.musical_key` | `djmdContent.KeyID` through `djmdKey.ScaleName` |
+| `track.rating`, `track.dj_plays` | `djmdContent.Rating`, `DJPlayCount` |
+| `track_tag` | `djmdMyTag` through `djmdSongMyTag` |
+| `artist_tag` | the union of an artist's tracks, weighted by count |
 
 The join is on the file path, folded to NFC first. The filesystem returns decomposed accents and rekordbox composed ones, so without that fold an exact join matches nothing while looking correct.
 
@@ -70,52 +69,32 @@ The tags are a curated taxonomy spanning style and region, so they filter far mo
 
 `--no-rekordbox` skips the step.
 
-## Looking at the shape of it
+## The app
 
-`discolab map` draws the graph as a heat field and scopes suggestions to one region of it.
+```
+uv run discolab serve
+```
 
-| Element | Meaning |
+It reads the database on every page load, so a rerun of `guess` shows on refresh. `--port N` moves it, `--no-open` leaves the browser alone. It binds to localhost only.
+
+| Page | Shows |
 |---|---|
-| A region | One cluster, its glow sized by how many artists it holds, placed so clusters that share artists settle near each other. Where glows overlap, the colour deepens |
-| Its colour | The genre family, so two regions of a colour hold the same broad kind of music |
-| Its name | The rekordbox tag the region's artists share, where they share one: Raw / Deep / Hypnotic, Maghreb & Mashriq, Central Asian. A region with no tag stays unnamed. Names are placed largest region first and skipped where one would land on another, so all of them appear by about three times zoom |
-| Hovering | Names what is under the pointer, and leaves the selection alone |
-| Clicking | Adds that cluster to the selection; clicking again removes it. Several combine into one list, and each selection is a chip that can be dropped |
-| Wheel and drag | Zooms and pans. Double-click resets |
-| The list | Artists the selected clusters point at, ranked by how many of their artists point at each. Each name opens that artist's Last.fm page, using the URL expansion recorded, or one built from the name |
+| Discoveries | Every artist you do not have that two areas vote for, best first, with the two areas and the seeds that led there |
+| Map | One bubble per area of at least 5 artists, sized by its artist count and tinted by genre family. A line joins two areas that share discoveries, thicker when they share more |
+| An area | Its discoveries, and its own artists most played first. Reached from a bubble or from an area chip on a discovery |
 
-Clusters are found on the graph of related artists and collaborations, not on what shares a playlist. Measured on this library, the co-occurrence graph partitions at a modularity of 0.348 with 26% genre purity inside a cluster; related artists and collaborations give 0.854 and 39.6%, and folding co-occurrence back in at any weight drops it again. Shared genre is not an input either: scoring purity against a signal the clustering can see measures its own input rather than the result.
+Sixty-odd raw Deezer labels are folded into eight families before an area is tinted. Electro, Dance, Techno/House and Trance are one family.
 
-Sixty-odd raw Deezer labels are folded into eight families before anything is drawn. Electro, Dance, Techno/House and Trance are one family, because tinting by the top raw label spends sixty colours on six ideas. The raw labels stay in the panel, where there is room for them.
-
-Clusters are identified by the genre family they lean on, which is also what tints them. Naming one more precisely than that is unsolved and left out for now.
-
-`enrich --per-cluster N` is what gives a cluster its genre evidence: ranking by agreement cannot describe a cluster, because the artists that define one are the ones it is built around, not the ones most seeds point at.
-
-## Checking the candidates
-
-`discolab check` writes one HTML page, one section per artist, with links to Spotify, YouTube, Bandcamp, Discogs and MusicBrainz.
-
-Each section embeds one official track. Candidates are found by searching the artist name, then the titles of tracks the library already holds, which is what turns a thin and repetitive pool into the actual uploads.
+`Listen` on a discovery searches YouTube for one official upload and embeds it. Results are kept in `videos.json` beside the database, so an artist is searched once.
 
 | Rule | Reason |
 |---|---|
 | Single tracks only | Sets, mixes and full albums are rejected on title, or on a length above 15 minutes |
 | The artist's own channel, or their distributor's Topic channel | A name search returns fan re-uploads first |
 | A verified channel only when the title opens with the artist's name, and only when the artist has no channel of their own | Verified businesses re-upload anything |
-| Many uploads per artist, ranked by channel trust then by whether the library holds the track | Uploaders can block embedding, so the page needs somewhere to go next |
+| Several uploads per artist, ranked by channel trust | An upload that blocks embedding is replaced by the next one |
 
-Each embed is tagged `new`, `played`, or `already held`. Track titles match whole words in the video title after normalisation. Whole-library matches still require at least 12 normalised characters. The tag updates when the page moves to another upload.
-
-The header reports how many embeds are tracks you already hold, since those test recognition rather than discovery.
-
-The page listens for the YouTube player's error event and loads the next candidate, so an upload that blocks embedding is replaced rather than becoming a dead frame. Only when every candidate is blocked does it fall back to a thumbnail and a link. It records how many it tried, which distinguishes an artist who blocks embedding channel-wide from a retry loop that failed.
-
-An artist with no official upload gets no embed rather than a re-upload. `Humanoids` on the sample library is one.
-
-The page is written to `out/`, which is not committed, and it lists local file paths.
-
-Resolving the embeds is the only step that touches the network, and `--no-youtube` keeps the whole run offline. The page must be served rather than opened from disk: a `file://` page sends no referrer and YouTube rejects the embed with error 153. Serving is the default.
+An artist with no official upload gets a link to a YouTube search rather than a re-upload.
 
 ## Configuration
 
@@ -201,41 +180,20 @@ The playlist contents endpoint is `/playlists/{id}/items`; `/tracks` was withdra
 
 ## Expanding beyond your own music
 
-Ranking artists that bridge the graph only returns artists you already have, because every node came from your own data. Those bridges are seeds, not answers.
+Ranking artists that bridge the graph only returns artists you already have, because every artist came from your own data. Those bridges are seeds, not answers.
 
-`discolab expand` takes the most central member of each taste cluster, asks Last.fm for similar artists, and writes the ones you do not have as external nodes.
+`discolab expand` takes the most central member of each taste cluster, asks Last.fm for similar artists, and writes the ones you do not have as external artists.
 
-```
-uv run discolab check --cluster 13
-uv run discolab check --cluster 13 --periphery
-```
-
-Narrowing is done by scoping, not by filtering. The graph stays complete and unfiltered, and a cluster is a choice about where to look rather than a value baked into the rank.
-
-| Scope | What it shows |
-|---|---|
-| `--cluster N` | artists outside your library reached from that cluster's seeds |
-| `--cluster N --periphery` | that cluster's own artists with the fewest internal edges |
-| nothing | the whole taste, ranked by how many seeds agree |
-
-Cluster 13 holds six artists and produced the first track kept from a discovery page. Small clusters are the productive ones.
-
-Then build the page from those artists rather than from your own:
-
-```
-uv run discolab check --source external
-```
-
-One seed suggesting an artist says almost nothing, and that is most of a similarity list. What matters is two separate tastes leading to the same artist, so the page is ranked by the weaker side of that intersection.
+One seed suggesting an artist says almost nothing, and that is most of a similarity list. What matters is two separate tastes leading to the same artist, so the discoveries are ranked by the weaker side of that intersection.
 
 | Step | Rule |
 |---|---|
-| Areas | Louvain at resolution 0.3 over your own artists only, written as `Artist.area`. Expansion artists are left out, since one linking two areas merges them |
+| Areas | Louvain at resolution 0.3 over your own artists only, written as `artist.area`. Expansion artists are left out, since one linking two areas merges them |
 | Eligible area | At least 5 seeds |
 | An area's vote | At least 2 of its seeds name the artist; support is the share of its seeds that do |
 | Rank | The second-best area's support, highest first |
 
-Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the page.
+Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the app.
 
 ## Genres
 
