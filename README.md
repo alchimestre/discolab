@@ -42,7 +42,7 @@ The three steps are not optional and not ordered by taste: `guess` reads communi
 | `discolab tags` | Fill in Last.fm's genre tags where no other source has one |
 | `discolab serve` | Serve the app on `http://127.0.0.1:8765/` |
 | `discolab clusters` | List the taste clusters |
-| `discolab stats` | Node, edge and island counts |
+| `discolab stats` | Artist, track, edge and island counts |
 | `discolab prune` | Drop unplayed tracks and the artists left with none |
 | `discolab reset --yes` | Empty the database |
 | `discolab spotify-login` | Authorise against Spotify once, caching the refresh token |
