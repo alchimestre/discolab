@@ -92,27 +92,24 @@ def _distinctive_styles(rows: list[dict]) -> dict[int, list[str]]:
 
     Ranked by count, a dozen areas are all "Electro"; ranked by lift they read
     techno, ambient, psytrance. A style held by too few members to name the
-    area is left out, and a case-only duplicate ("Jazz", "jazz") is shown once.
+    area is left out. Totals are keyed by folded case, since one area's
+    spelling of a style can differ from another's.
     """
     everywhere: Counter[str] = Counter()
     for row in rows:
-        everywhere.update(dict(row["styles"]))
+        everywhere.update({style.casefold(): count for style, count in row["styles"]})
     artists = sum(len(row["artists"]) for row in rows)
     named = {}
     for row in rows:
         size = len(row["artists"])
         held = max(MIN_STYLE_HOLDERS, MIN_STYLE_SHARE * size)
         lift = {
-            style: (count / size) / (everywhere[style] / artists)
+            style: (count / size) / (everywhere[style.casefold()] / artists)
             for style, count in row["styles"]
             if count >= held
         }
         ordered = sorted(lift, key=lambda style: -lift[style])
-        ordered += [style for style, _ in row["styles"] if style not in lift]
-        first_spelling: dict[str, str] = {}
-        for style in ordered:
-            first_spelling.setdefault(style.casefold(), style)
-        named[row["area"]] = list(first_spelling.values())
+        named[row["area"]] = ordered + [style for style, _ in row["styles"] if style not in lift]
     return named
 
 

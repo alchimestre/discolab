@@ -190,11 +190,11 @@ def areas(connection: sqlite3.Connection, min_size: int = MIN_AREA_SIZE) -> list
 
     for row in connection.execute(
         """
-        SELECT a.area, style.value AS style, count(*) AS n
+        SELECT a.area, min(style.value) AS style, count(DISTINCT a.key) AS n
         FROM artist a, json_each(a.styles) AS style
         WHERE a.area >= 0
-        GROUP BY a.area, style.value
-        ORDER BY n DESC, style.value
+        GROUP BY a.area, lower(style.value)
+        ORDER BY n DESC, style
         """
     ):
         found[row["area"]]["styles"].append((row["style"], row["n"]))

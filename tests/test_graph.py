@@ -89,3 +89,18 @@ def test_two_areas_of_one_region_do_not_count_as_separate_tastes(tmp_path) -> No
     assert [row["key"] for row in ranked] == ["between"]
     assert len(ranked[0]["votes"]) == 2
     assert ranked[0]["balance"] == 0
+
+
+def test_a_style_spelled_two_ways_counts_each_artist_once(tmp_path) -> None:
+    settings = Settings(library_roots=(), database_path=tmp_path / "graph.db")
+    spellings = {"surgeon": '["Jazz", "jazz"]', "regis": '["jazz"]', "female": '["Jazz"]'}
+
+    with store.connect(settings) as connection:
+        load.load_catalog(connection, _catalog(TECHNO))
+        for key, styles in spellings.items():
+            connection.execute(
+                "UPDATE artist SET area = 0, styles = ? WHERE key = ?", (styles, key)
+            )
+        [area] = query.areas(connection, min_size=1)
+
+    assert area["styles"] == [("Jazz", 3)]
