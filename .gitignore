@@ -8,3 +8,4 @@ out/
 /graphify-out/
 certs/
 .DS_Store
+.truthiness/
