@@ -14,11 +14,11 @@ Two areas selected on the map, techno and ambient: the list shows what both lead
 
 ```mermaid
 flowchart LR
-  sources["Audio files<br>Last.fm scrobbles<br>Spotify playlists<br>rekordbox"] --> graph["Artist graph<br>credits, shared albums,<br>playlists, sessions"]
-  graph --> areas["Areas<br>Louvain over your<br>own artists"]
-  areas --> expand["Last.fm similar artists<br>for each area's seeds"]
-  expand --> rank["Ranked discoveries<br>voted for by<br>two separate regions"]
-  rank --> app["Map and list<br>on localhost"]
+  sources["Audio files<br>Last.fm scrobbles<br>Spotify playlists<br>rekordbox"] --> artists["Artist graph<br>credits, shared albums,<br>playlists, sessions"]
+  artists --> areas["Areas<br>Louvain over your<br>own artists"]
+  areas --> lookup["Last.fm similar artists<br>for each area's seeds"]
+  lookup --> ranked["Ranked discoveries<br>voted for by<br>two separate regions"]
+  ranked --> webapp["Map and list<br>on localhost"]
 ```
 
 One seed suggesting an artist says almost nothing. Two unrelated parts of your taste agreeing on the same artist says a lot, so discoveries are ranked by the weaker of the two votes.
