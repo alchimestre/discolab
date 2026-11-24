@@ -21,6 +21,8 @@ from .youtube import load_video_cache, resolve_artist, save_video_cache
 STATIC = Path(__file__).parent / "static"
 HOST = "127.0.0.1"
 EVERY = -1
+MIN_STYLE_HOLDERS = 3
+MIN_STYLE_SHARE = 0.1
 
 
 def make_server(settings: Settings, port: int) -> http.server.ThreadingHTTPServer:
@@ -54,8 +56,12 @@ def graph_payload(connection: sqlite3.Connection) -> dict:
     links = [(a, b, count) for (a, b), count in shared.items()]
     layout(placed, links + _sibling_pulls(rows, max(shared.values(), default=1)))
     tints = _region_tints(rows)
+    named = _distinctive_styles(rows)
     return {
-        "areas": [_area_json(area, row, tints[row["region"]]) for area, row in zip(placed, rows)],
+        "areas": [
+            _area_json(area, row, tints[row["region"]], named[row["area"]])
+            for area, row in zip(placed, rows)
+        ],
         "links": [{"a": a, "b": b, "shared": count} for a, b, count in links],
         "discoveries": discoveries,
     }
@@ -81,7 +87,36 @@ def _region_tints(rows: list[dict]) -> dict[int, Area]:
     }
 
 
-def _area_json(area: Area, row: dict, region: Area) -> dict:
+def _distinctive_styles(rows: list[dict]) -> dict[int, list[str]]:
+    """Each area's styles, the ones most over-represented against every area first.
+
+    Ranked by count, a dozen areas are all "Electro"; ranked by lift they read
+    techno, ambient, psytrance. A style held by too few members to name the
+    area is left out, and a case-only duplicate ("Jazz", "jazz") is shown once.
+    """
+    everywhere: Counter[str] = Counter()
+    for row in rows:
+        everywhere.update(dict(row["styles"]))
+    artists = sum(len(row["artists"]) for row in rows)
+    named = {}
+    for row in rows:
+        size = len(row["artists"])
+        held = max(MIN_STYLE_HOLDERS, MIN_STYLE_SHARE * size)
+        lift = {
+            style: (count / size) / (everywhere[style] / artists)
+            for style, count in row["styles"]
+            if count >= held
+        }
+        ordered = sorted(lift, key=lambda style: -lift[style])
+        ordered += [style for style, _ in row["styles"] if style not in lift]
+        first_spelling: dict[str, str] = {}
+        for style in ordered:
+            first_spelling.setdefault(style.casefold(), style)
+        named[row["area"]] = list(first_spelling.values())
+    return named
+
+
+def _area_json(area: Area, row: dict, region: Area, styles: list[str]) -> dict:
     return {
         "id": area.key,
         "region": row["region"],
@@ -90,7 +125,7 @@ def _area_json(area: Area, row: dict, region: Area) -> dict:
         "r": round(area.r, 1),
         "colour": region.colour,
         "family": region.family,
-        "styles": [style for style, _ in row["styles"][:5]],
+        "styles": styles[:5],
         "artists": row["artists"],
     }
 
