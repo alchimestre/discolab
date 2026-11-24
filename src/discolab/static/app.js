@@ -1,6 +1,11 @@
 const main = document.querySelector("main");
 const PAGE_SIZE = 40;
 const MAP_PADDING = 40;
+const LABEL_PX = 11;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 24;
+const WHEEL_RATE = 0.0016;
+const DRAG_THRESHOLD_PX = 4;
 
 let graph;
 let areas;
@@ -44,6 +49,7 @@ function render() {
     main.innerHTML = "<h1>Nothing to show yet</h1><p class='lede'>Run <code>discolab ingest</code>, then <code>discolab guess</code>.</p>";
   } else if (page === "map") {
     main.innerHTML = mapView();
+    panAndZoom(main.querySelector("svg.map"));
   } else if (page === "area") {
     main.innerHTML = areaView(Number(id));
   } else {
@@ -102,10 +108,77 @@ function mapLine(link, heaviest) {
 function mapBubble(area) {
   return `<a href="#/area/${area.id}" style="--tint:${area.colour}">
     <circle cx="${area.x}" cy="${area.y}" r="${area.r}"/>
-    <text class="style" x="${area.x}" y="${area.y - 2}">${escapeHtml(area.styles[0] || "")}</text>
-    <text x="${area.x}" y="${area.y + 11}">${escapeHtml(area.artists[0])}</text>
+    <text class="style" x="${area.x}" y="${area.y}" dy="-0.2em">${escapeHtml(area.styles[0] || "")}</text>
+    <text x="${area.x}" y="${area.y}" dy="1em">${escapeHtml(area.artists[0])}</text>
     <title>${area.artists.length} artists · ${escapeHtml(area.artists.slice(0, 5).join(", "))}</title>
   </a>`;
+}
+
+function panAndZoom(svg) {
+  const home = svg.viewBox.baseVal;
+  const size = { width: home.width, height: home.height };
+  const rest = { x: home.x, y: home.y, zoom: 1 };
+  const view = { ...rest };
+  let drag = null;
+  let dragged = false;
+
+  // Screen pixels per graph unit, taken from the drawn map: the box is letterboxed.
+  const scale = () => svg.getScreenCTM().a;
+
+  function apply() {
+    svg.setAttribute("viewBox", `${view.x} ${view.y} ${size.width / view.zoom} ${size.height / view.zoom}`);
+    // Names are drawn in graph units, so the font scales the other way to stay one size on screen.
+    svg.style.setProperty("--area-label", `${(LABEL_PX / scale()).toFixed(2)}px`);
+  }
+
+  svg.addEventListener("wheel", event => {
+    event.preventDefault();
+    const before = svg.getScreenCTM();
+    // The graph point under the cursor, held still while everything scales around it.
+    const graphX = (event.clientX - before.e) / before.a;
+    const graphY = (event.clientY - before.f) / before.d;
+    view.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.zoom * Math.exp(-event.deltaY * WHEEL_RATE)));
+    apply();
+    const after = svg.getScreenCTM();
+    view.x += graphX - (event.clientX - after.e) / after.a;
+    view.y += graphY - (event.clientY - after.f) / after.d;
+    apply();
+  }, { passive: false });
+
+  svg.addEventListener("pointerdown", event => {
+    drag = { x: event.clientX, y: event.clientY, id: event.pointerId, travelled: 0 };
+    dragged = false;
+  });
+  svg.addEventListener("pointermove", event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const stepX = event.clientX - drag.x;
+    const stepY = event.clientY - drag.y;
+    drag.travelled += Math.abs(stepX) + Math.abs(stepY);
+    if (!dragged) {
+      if (drag.travelled <= DRAG_THRESHOLD_PX) return;
+      dragged = true;
+      // Capture only once this is a drag: capturing on pointerdown takes the click from the bubble.
+      // Capture can throw if the pointer is already gone, and that must not abort the pan.
+      try { svg.setPointerCapture(event.pointerId); } catch { /* keep panning */ }
+    }
+    // The view moves against the hand so the map follows it.
+    view.x -= stepX / scale();
+    view.y -= stepY / scale();
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    apply();
+  });
+  svg.addEventListener("pointerup", () => { drag = null; });
+  svg.addEventListener("pointercancel", () => { drag = null; });
+  // A drag that ends over a bubble must not open its area.
+  svg.addEventListener("click", event => {
+    if (dragged) event.preventDefault();
+  }, true);
+  svg.addEventListener("dblclick", () => {
+    Object.assign(view, rest);
+    apply();
+  });
+  apply();
 }
 
 function cards(discoveries) {

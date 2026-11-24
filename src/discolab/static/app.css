@@ -52,11 +52,11 @@ button:hover { border-color: currentColor; }
 .more { display: block; margin: 16px auto; }
 .members { column-width: 200px; column-gap: 24px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
 
-svg.map { width: 100%; height: calc(100vh - 190px); min-height: 420px; display: block; }
+svg.map { width: 100%; height: calc(100vh - 190px); min-height: 420px; display: block; cursor: grab; touch-action: none; }
 .map line { stroke: currentColor; stroke-opacity: .16; stroke-linecap: round; }
 .map circle { fill: var(--tint); fill-opacity: .3; stroke: var(--tint); stroke-width: 1.5; }
 .map a:hover circle, .map a:focus circle { fill-opacity: .55; }
-.map text { fill: CanvasText; font-size: 11px; text-anchor: middle; paint-order: stroke; stroke: Canvas; stroke-width: 3px; pointer-events: none; }
+.map text { fill: CanvasText; font-size: var(--area-label, 11px); text-anchor: middle; paint-order: stroke; stroke: Canvas; stroke-width: .25em; pointer-events: none; }
 .map text.style { font-weight: 600; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--quiet); }
 .legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--tint); margin-right: 6px; }

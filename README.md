@@ -80,7 +80,7 @@ It reads the database on every page load, so a rerun of `guess` shows on refresh
 | Page | Shows |
 |---|---|
 | Discoveries | Every artist you do not have that two areas vote for, best first, with the two areas and the seeds that led there |
-| Map | One bubble per area of at least 5 artists, sized by its artist count and tinted by genre family. A line joins two areas that share discoveries, thicker when they share more |
+| Map | One bubble per area of at least 5 artists, sized by its artist count and tinted by genre family. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
 | An area | Its discoveries, and its own artists most played first. Reached from a bubble or from an area chip on a discovery |
 
 Sixty-odd raw Deezer labels are folded into eight families before an area is tinted. Electro, Dance, Techno/House and Trance are one family.
