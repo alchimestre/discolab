@@ -79,12 +79,12 @@ It reads the database on every page load, so a rerun of `guess` shows on refresh
 
 | Side | Shows |
 |---|---|
-| Left, the map | One bubble per area of at least 5 artists, sized by its artist count and tinted by genre family. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
-| Right, the list | Every artist you do not have that two areas vote for, best first, with the two areas and the seeds that led there |
+| Left, the map | One bubble per area of at least 5 artists, sized by its artist count. Areas of one region are drawn together and share the region's genre-family tint. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
+| Right, the list | Every artist you do not have that two regions vote for, best first, with every area that voted and the seeds that led there |
 
 A click on a bubble, or on an area chip in the list, selects that area; a second click unselects it. One selected area narrows the list to its discoveries. Several narrow it to the artists every selected area votes for, ranked by the weakest of those votes.
 
-Sixty-odd raw Deezer labels are folded into eight families before an area is tinted. Electro, Dance, Techno/House and Trance are one family.
+Sixty-odd raw Deezer labels are folded into eight families before a region is tinted. Electro, Dance, Techno/House and Trance are one family.
 
 `Listen` on a discovery searches YouTube for one official upload and embeds it. Results are kept in `videos.json` beside the database, so an artist is searched once.
 
@@ -189,10 +189,11 @@ One seed suggesting an artist says almost nothing, and that is most of a similar
 
 | Step | Rule |
 |---|---|
-| Areas | Louvain at resolution 0.3 over your own artists only, written as `artist.area`. Expansion artists are left out, since one linking two areas merges them |
+| Areas | Louvain at resolution 1.0 over your own artists only, written as `artist.area`. Expansion artists are left out, since one linking two areas merges them |
+| Regions | Louvain at resolution 0.3 over the same graph. An area belongs to the region most of its artists fall in |
 | Eligible area | At least 5 seeds |
 | An area's vote | At least 2 of its seeds name the artist; support is the share of its seeds that do |
-| Rank | The second-best area's support, highest first |
+| Rank | The second-best region's support, a region taking its best area's, highest first. Two areas of one region are one taste, so an artist only they vote for is left out of the main list but still shows when you select them |
 
 Measured over 200 seeds: 3,778 suggestions, 1,028 already in your corpus, and agreement of 5 seeds for 4 artists, 4 for 8, 3 for 46, 2 for 238, and 1 for 2,079. The single seed tail is the low quality material and it does not reach the app.
 

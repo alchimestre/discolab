@@ -51,22 +51,45 @@ def graph_payload(connection: sqlite3.Connection) -> dict:
         )
         for row in rows
     ]
-    layout(placed, [(a, b, count) for (a, b), count in shared.items()])
+    links = [(a, b, count) for (a, b), count in shared.items()]
+    layout(placed, links + _sibling_pulls(rows, max(shared.values(), default=1)))
+    tints = _region_tints(rows)
     return {
-        "areas": [_area_json(area, row) for area, row in zip(placed, rows)],
-        "links": [{"a": a, "b": b, "shared": count} for (a, b), count in shared.items()],
+        "areas": [_area_json(area, row, tints[row["region"]]) for area, row in zip(placed, rows)],
+        "links": [{"a": a, "b": b, "shared": count} for a, b, count in links],
         "discoveries": discoveries,
     }
 
 
-def _area_json(area: Area, row: dict) -> dict:
+def _sibling_pulls(rows: list[dict], weight: int) -> list[tuple[int, int, int]]:
+    """A link at full weight between every two areas of one region, so a region is drawn together."""
+    return [
+        (a["area"], b["area"], weight)
+        for a, b in itertools.combinations(rows, 2)
+        if a["region"] == b["region"]
+    ]
+
+
+def _region_tints(rows: list[dict]) -> dict[int, Area]:
+    """One genre family per region, from the styles of all its areas."""
+    styles: dict[int, Counter[str]] = {}
+    for row in rows:
+        styles.setdefault(row["region"], Counter()).update(dict(row["styles"]))
+    return {
+        region: Area(key=region, size=0, genres=tuple(counts.most_common()))
+        for region, counts in styles.items()
+    }
+
+
+def _area_json(area: Area, row: dict, region: Area) -> dict:
     return {
         "id": area.key,
+        "region": row["region"],
         "x": round(area.x, 1),
         "y": round(area.y, 1),
         "r": round(area.r, 1),
-        "colour": area.colour,
-        "family": area.family,
+        "colour": region.colour,
+        "family": region.family,
         "styles": [style for style, _ in row["styles"][:5]],
         "artists": row["artists"],
     }

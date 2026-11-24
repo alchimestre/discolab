@@ -70,3 +70,22 @@ def test_a_candidate_carries_every_area_that_votes_for_it(tmp_path) -> None:
     assert [row["key"] for row in ranked] == ["everywhere"]
     assert [vote["support"] for vote in ranked[0]["votes"]] == [1, 2 / 3, 2 / 3]
     assert ranked[0]["balance"] == 2 / 3
+
+
+def test_two_areas_of_one_region_do_not_count_as_separate_tastes(tmp_path) -> None:
+    settings = Settings(library_roots=(), database_path=tmp_path / "graph.db")
+    rows = []
+    for area in (TECHNO, DESERT):
+        rows += [_similar(a, b, False) for a in area for b in area if a < b]
+        rows += [_similar(seed, "between", True) for seed in area[:2]]
+
+    with store.connect(settings) as connection:
+        load.load_catalog(connection, _catalog())
+        load.write_expansion(connection, rows)
+        derive.assign_areas(connection)
+        connection.execute("UPDATE area SET region = 0")
+        ranked = query.external_candidates(connection, limit=-1, min_area_seeds=3)
+
+    assert [row["key"] for row in ranked] == ["between"]
+    assert len(ranked[0]["votes"]) == 2
+    assert ranked[0]["balance"] == 0

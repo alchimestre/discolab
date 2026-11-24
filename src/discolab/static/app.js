@@ -73,11 +73,12 @@ function showSelection() {
 }
 
 function everyList() {
-  return `<h1>Between your areas</h1>
-    <p class="lede">${graph.discoveries.length} artists you do not have, each one reached from
-    two separate areas of your taste. Ranked by the share of the weaker area's seeds that lead there.
+  const between = graph.discoveries.filter(discovery => discovery.balance > 0);
+  return `<h1>Between your regions</h1>
+    <p class="lede">${between.length} artists you do not have, each one reached from
+    two separate regions of your taste. Ranked by the share of the weaker region's seeds that lead there.
     Click bubbles to see what they share.</p>
-    ${cards(graph.discoveries)}`;
+    ${cards(between)}`;
 }
 
 function selectionList(selected) {

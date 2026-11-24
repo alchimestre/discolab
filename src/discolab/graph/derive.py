@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 
 import networkx as nx
 
 DEFAULT_RESOLUTION = 1.0
 RANDOM_SEED = 42
-# Coarser than the cluster resolution: at 1.0 one genre splits into several
-# areas, and its own fragments then "agree" as if they were distinct tastes.
-AREA_RESOLUTION = 0.3
+# Areas are drawn and selected; regions decide what counts as two separate tastes.
+# At 1.0 one genre splits into several areas, and its fragments would "agree" as
+# if they were distinct tastes, so agreement is only counted across regions.
+AREA_RESOLUTION = 1.0
+REGION_RESOLUTION = 0.3
 
 # One weighted row per unordered artist pair. Ordered, because Louvain's result
 # depends on the order edges are added in, even with a fixed seed.
@@ -133,24 +136,43 @@ def assign_communities(
     }
 
 
-def assign_areas(connection: sqlite3.Connection, resolution: float = AREA_RESOLUTION) -> int:
-    """Louvain over the user's own artists only, written as `artist.area`.
+def assign_areas(
+    connection: sqlite3.Connection,
+    resolution: float = AREA_RESOLUTION,
+    region_resolution: float = REGION_RESOLUTION,
+) -> int:
+    """Louvain over the user's own artists only, written as `artist.area`, each in a region.
 
     Communities include expansion artists, and one that links two areas pulls
     them into a single community, which erases the intersection being ranked.
+    A region is a coarser Louvain run; an area belongs to the one most of its
+    artists fall in, since the two runs do not nest exactly.
     """
     connection.execute("UPDATE artist SET area = -1")
+    connection.execute("DELETE FROM area")
     graph = _graph(connection, ARTIST_EDGES.format(where=CORPUS_ONLY))
     if graph.number_of_nodes() == 0:
         return 0
-    areas = nx.community.louvain_communities(
-        graph, weight="weight", resolution=resolution, seed=RANDOM_SEED
-    )
+    area_of = _largest_first(_louvain(graph, resolution))
+    region_of = _largest_first(_louvain(graph, region_resolution))
     connection.executemany(
         "UPDATE artist SET area = ? WHERE key = ?",
-        [(area, key) for key, area in _largest_first(areas).items()],
+        [(area, key) for key, area in area_of.items()],
     )
-    return len(areas)
+    members: dict[int, Counter[int]] = {}
+    for key, area in area_of.items():
+        members.setdefault(area, Counter())[region_of[key]] += 1
+    connection.executemany(
+        "INSERT INTO area (id, region) VALUES (?, ?)",
+        [(area, regions.most_common(1)[0][0]) for area, regions in members.items()],
+    )
+    return len(members)
+
+
+def _louvain(graph: nx.Graph, resolution: float) -> list[set[str]]:
+    return nx.community.louvain_communities(
+        graph, weight="weight", resolution=resolution, seed=RANDOM_SEED
+    )
 
 
 def _graph(connection: sqlite3.Connection, edges_sql: str) -> nx.Graph:

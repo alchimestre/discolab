@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS artist_tag (
     artist_key TEXT NOT NULL, tag TEXT NOT NULL, tracks INTEGER NOT NULL,
     PRIMARY KEY (artist_key, tag)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS area (id INTEGER PRIMARY KEY, region INTEGER NOT NULL);
 """
 
 TABLES = (
@@ -79,6 +80,7 @@ TABLES = (
     "co_occurs",
     "track_tag",
     "artist_tag",
+    "area",
 )
 
 # An artist no table refers to. Pair tables store one row per unordered pair,

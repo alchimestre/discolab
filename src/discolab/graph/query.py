@@ -169,19 +169,22 @@ def clusters(connection: sqlite3.Connection, limit: int = 40, sample: int = 6) -
 
 
 def areas(connection: sqlite3.Connection, min_size: int = MIN_AREA_SIZE) -> list[dict]:
-    """The taste areas, largest first, each with its artists most played first."""
+    """The taste areas, largest first, each with its region and its artists most played first."""
     found: dict[int, dict] = {}
     for row in connection.execute(
         """
-        SELECT a.area, a.name
-        FROM artist a LEFT JOIN track t ON t.artist_key = a.key
+        SELECT a.area, coalesce(r.region, a.area) AS region, a.name
+        FROM artist a
+        LEFT JOIN track t ON t.artist_key = a.key
+        LEFT JOIN area r ON r.id = a.area
         WHERE a.area >= 0
         GROUP BY a.key
         ORDER BY coalesce(sum(t.plays), 0) DESC, a.degree DESC, a.name
         """
     ):
         entry = found.setdefault(
-            row["area"], {"area": row["area"], "artists": [], "styles": []}
+            row["area"],
+            {"area": row["area"], "region": row["region"], "artists": [], "styles": []},
         )
         entry["artists"].append(row["name"])
 
@@ -213,12 +216,14 @@ def external_candidates(
     min_areas: int = 2,
     min_area_seeds: int = MIN_AREA_SIZE,
 ) -> list[dict]:
-    """Artists from outside the corpus, ranked by the weaker of their two best areas.
+    """Artists from outside the corpus, ranked by the weaker of their two best regions.
 
     An area votes for an artist when at least two of its seeds name it, and its
-    support is the share of the area's seeds that do. Ranking by the
-    second-best support rewards an artist two separate tastes both lead to;
-    ranking by seed count rewards the centre of the largest area. Areas with
+    support is the share of the area's seeds that do. A region's support is its
+    best area's. Ranking by the second-best region rewards an artist two separate
+    tastes both lead to; ranking by seed count rewards the centre of the largest
+    area. An artist only sibling areas of one region vote for is kept with a
+    balance of 0, so a chosen set of areas can still be intersected. Areas with
     fewer than `min_area_seeds` seeds are ignored, since two seeds out of two
     is a full vote from almost nothing.
 
@@ -256,11 +261,23 @@ def external_candidates(
                        count(*) OVER (PARTITION BY key) AS areas,
                        sum(votes) OVER (PARTITION BY key) AS seed_count
                 FROM vote
+            ),
+            region_ranked AS (
+                SELECT key, support,
+                       row_number() OVER (
+                           PARTITION BY key ORDER BY support DESC, region
+                       ) AS position
+                FROM (
+                    SELECT vote.key, coalesce(area.region, vote.area) AS region,
+                           max(vote.support) AS support
+                    FROM vote LEFT JOIN area ON area.id = vote.area
+                    GROUP BY vote.key, coalesce(area.region, vote.area)
+                )
             )
             SELECT e.key, e.name, e.url, e.styles, vote.seed_count, vote.areas,
-                   weaker.support AS balance, vote.area, vote.support
+                   coalesce(weaker.support, 0) AS balance, vote.area, vote.support
             FROM ranked vote
-            JOIN ranked weaker ON weaker.key = vote.key AND weaker.position = 2
+            LEFT JOIN region_ranked weaker ON weaker.key = vote.key AND weaker.position = 2
             JOIN artist e ON e.key = vote.key
             WHERE vote.areas >= :min_areas
             ORDER BY balance DESC, vote.seed_count DESC, e.key, vote.position
