@@ -164,9 +164,14 @@ def assign_areas(
         members.setdefault(area, Counter())[region_of[key]] += 1
     connection.executemany(
         "INSERT INTO area (id, region) VALUES (?, ?)",
-        [(area, regions.most_common(1)[0][0]) for area, regions in members.items()],
+        [(area, _main_region(regions)) for area, regions in members.items()],
     )
     return len(members)
+
+
+def _main_region(regions: Counter[int]) -> int:
+    """The region most members fall in, the lowest id on a tie: member order varies between runs."""
+    return min(regions, key=lambda region: (-regions[region], region))
 
 
 def _louvain(graph: nx.Graph, resolution: float) -> list[set[str]]:
