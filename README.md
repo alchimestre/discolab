@@ -1,8 +1,27 @@
-# discolab
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="discolab: the artists two separate parts of your taste both lead to">
+</p>
 
-Builds a taste graph from what you listen to, then ranks the artists that sit between otherwise separate parts of it.
+discolab builds a taste graph from what you listen to, splits it into areas of taste, and asks Last.fm what each area sounds like next. An artist you do not have that two separate areas both point to is ranked first. Everything runs locally: one SQLite file, one browser page.
 
-Three sources are aggregated into one graph: the audio files on disk, Last.fm scrobbles, and Spotify playlists and liked songs. Deezer then adds genres and labels.
+<p align="center">
+  <img src="./assets/readme/app.jpg" width="100%" alt="The app: a map of taste areas on the left, and on the right the 118 artists both the techno and ambient areas lead to, each with a Listen button">
+</p>
+
+Two areas selected on the map, techno and ambient: the list shows what both lead to, with the seeds that voted for each artist.
+
+## How it works
+
+```mermaid
+flowchart LR
+  sources["Audio files<br>Last.fm scrobbles<br>Spotify playlists<br>rekordbox"] --> graph["Artist graph<br>credits, shared albums,<br>playlists, sessions"]
+  graph --> areas["Areas<br>Louvain over your<br>own artists"]
+  areas --> expand["Last.fm similar artists<br>for each area's seeds"]
+  expand --> rank["Ranked discoveries<br>voted for by<br>two separate regions"]
+  rank --> app["Map and list<br>on localhost"]
+```
+
+One seed suggesting an artist says almost nothing. Two unrelated parts of your taste agreeing on the same artist says a lot, so discoveries are ranked by the weaker of the two votes.
 
 ## Requirements
 
