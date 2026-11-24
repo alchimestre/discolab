@@ -268,3 +268,7 @@ WHERE a.name = 'El Búho';
 ```
 uv run pytest
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
