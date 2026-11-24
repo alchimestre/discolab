@@ -31,6 +31,17 @@ CORPUS_ONLY = """
     WHERE source IN (SELECT key FROM artist WHERE external = 0)
       AND target IN (SELECT key FROM artist WHERE external = 0)
 """
+# Both directions of every container pair, and two seeds Last.fm points to one artist from.
+NEIGHBOURS = """
+    SELECT a, b, weight FROM co_occurs
+    UNION ALL
+    SELECT b, a, weight FROM co_occurs
+    UNION ALL
+    SELECT mine.seed_key, theirs.seed_key, count(*)
+    FROM similar mine JOIN similar theirs
+      ON theirs.artist_key = mine.artist_key AND theirs.seed_key <> mine.seed_key
+    GROUP BY mine.seed_key, theirs.seed_key
+"""
 
 
 def build_collaboration_edges(connection: sqlite3.Connection) -> int:
@@ -146,7 +157,8 @@ def assign_areas(
     Communities include expansion artists, and one that links two areas pulls
     them into a single community, which erases the intersection being ranked.
     A region is a coarser Louvain run; an area belongs to the one most of its
-    artists fall in, since the two runs do not nest exactly.
+    artists fall in, since the two runs do not nest exactly. An artist with no
+    similarity or credit link joins the area its neighbours mostly sit in.
     """
     connection.execute("UPDATE artist SET area = -1")
     connection.execute("DELETE FROM area")
@@ -164,14 +176,34 @@ def assign_areas(
         members.setdefault(area, Counter())[region_of[key]] += 1
     connection.executemany(
         "INSERT INTO area (id, region) VALUES (?, ?)",
-        [(area, _main_region(regions)) for area, regions in members.items()],
+        [(area, _most_common(regions)) for area, regions in members.items()],
+    )
+    connection.executemany(
+        "UPDATE artist SET area = ? WHERE key = ?",
+        [(area, key) for key, area in _attach_unplaced(connection, area_of).items()],
     )
     return len(members)
 
 
-def _main_region(regions: Counter[int]) -> int:
-    """The region most members fall in, the lowest id on a tie: member order varies between runs."""
-    return min(regions, key=lambda region: (-regions[region], region))
+def _attach_unplaced(connection: sqlite3.Connection, area_of: dict[str, int]) -> dict[str, int]:
+    """The area each unplaced own artist's placed neighbours mostly sit in.
+
+    Neighbours share a container with it or a Last.fm suggestion with it. One
+    pass only: an artist whose neighbours are all unplaced stays off the map.
+    """
+    unplaced = {
+        key for (key,) in connection.execute("SELECT key FROM artist WHERE external = 0")
+    } - area_of.keys()
+    votes: dict[str, Counter[int]] = {}
+    for key, neighbour, weight in connection.execute(NEIGHBOURS):
+        if key in unplaced and neighbour in area_of:
+            votes.setdefault(key, Counter())[area_of[neighbour]] += weight
+    return {key: _most_common(areas) for key, areas in votes.items()}
+
+
+def _most_common(counts: Counter[int]) -> int:
+    """The heaviest id, the lowest on a tie: insertion order varies between runs."""
+    return min(counts, key=lambda item: (-counts[item], item))
 
 
 def _louvain(graph: nx.Graph, resolution: float) -> list[set[str]]:

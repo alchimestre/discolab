@@ -108,3 +108,18 @@ def test_a_style_spelled_two_ways_counts_each_artist_once(tmp_path) -> None:
         [area] = query.areas(connection, min_size=1)
 
     assert area["styles"] == [("Jazz", 3), ("Électro", 2)]
+
+
+def test_an_unlinked_artist_joins_the_area_its_neighbours_sit_in(tmp_path) -> None:
+    settings = Settings(library_roots=(), database_path=tmp_path / "graph.db")
+    rows = [_similar(a, b, False) for area in (TECHNO, DESERT) for a in area for b in area if a < b]
+
+    with store.connect(settings) as connection:
+        load.load_catalog(connection, _catalog(TECHNO + DESERT + ("loner", "stranger")))
+        load.write_expansion(connection, rows)
+        connection.execute("INSERT INTO co_occurs (a, b, weight) VALUES ('loner', 'regis', 1)")
+        derive.assign_areas(connection)
+        area = dict(connection.execute("SELECT key, area FROM artist"))
+
+    assert area["loner"] == area["regis"]
+    assert area["stranger"] == -1

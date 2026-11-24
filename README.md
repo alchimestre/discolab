@@ -207,6 +207,7 @@ One seed suggesting an artist says almost nothing, and that is most of a similar
 | Step | Rule |
 |---|---|
 | Areas | Louvain at resolution 1.0 over your own artists only, written as `artist.area`. Expansion artists are left out, since one linking two areas merges them |
+| Unlinked artists | An artist of yours with no similarity or credit link joins the area most of its neighbours sit in: artists sharing an album or playlist with it, or seeds Last.fm points to the same artist from. With no placed neighbour it stays off the map |
 | Regions | Louvain at resolution 0.3 over the same graph. An area belongs to the region most of its artists fall in |
 | Eligible area | At least 5 seeds |
 | An area's vote | At least 2 of its seeds name the artist; support is the share of its seeds that do |
