@@ -2,7 +2,7 @@
   <img src="./assets/readme/hero.svg" width="100%" alt="discolab: the artists two separate parts of your taste both lead to">
 </p>
 
-discolab builds a taste graph from what you listen to, splits it into areas of taste, and asks Last.fm what each area sounds like next. An artist you do not have that two separate areas both point to is ranked first. Everything runs locally: one SQLite file, one browser page.
+discolab builds a taste graph from what you listen to, splits it into areas of taste, and asks Last.fm which artists each area leads to. The main list ranks the artists you do not have that two different regions of your taste reach, by the weaker of the two votes. The graph and the app run locally, in one SQLite file and one browser page; the lookups go to Last.fm, and Listen goes to YouTube.
 
 <p align="center">
   <img src="./assets/readme/app.jpg" width="100%" alt="The app: a map of taste areas on the left, and on the right the 118 artists both the techno and ambient areas lead to, each with a Listen button">
