@@ -48,20 +48,15 @@ def graph_payload(connection: sqlite3.Connection) -> dict:
         Area(
             key=row["area"],
             size=len(row["artists"]),
-            genres=tuple(row["styles"]),
             r=radius_for(len(row["artists"]), largest),
         )
         for row in rows
     ]
     links = [(a, b, count) for (a, b), count in shared.items()]
     layout(placed, links + _sibling_pulls(rows, max(shared.values(), default=1)))
-    tints = _region_tints(rows)
     named = _distinctive_styles(rows)
     return {
-        "areas": [
-            _area_json(area, row, tints[row["region"]], named[row["area"]])
-            for area, row in zip(placed, rows)
-        ],
+        "areas": [_area_json(area, row, named[row["area"]]) for area, row in zip(placed, rows)],
         "links": [{"a": a, "b": b, "shared": count} for a, b, count in links],
         "discoveries": discoveries,
     }
@@ -75,16 +70,6 @@ def _sibling_pulls(rows: list[dict], weight: int) -> list[tuple[int, int, int]]:
         if a["region"] == b["region"]
     ]
 
-
-def _region_tints(rows: list[dict]) -> dict[int, Area]:
-    """One genre family per region, from the styles of all its areas."""
-    styles: dict[int, Counter[str]] = {}
-    for row in rows:
-        styles.setdefault(row["region"], Counter()).update(dict(row["styles"]))
-    return {
-        region: Area(key=region, size=0, genres=tuple(counts.most_common()))
-        for region, counts in styles.items()
-    }
 
 
 def _distinctive_styles(rows: list[dict]) -> dict[int, list[str]]:
@@ -113,15 +98,13 @@ def _distinctive_styles(rows: list[dict]) -> dict[int, list[str]]:
     return named
 
 
-def _area_json(area: Area, row: dict, region: Area, styles: list[str]) -> dict:
+def _area_json(area: Area, row: dict, styles: list[str]) -> dict:
     return {
         "id": area.key,
         "region": row["region"],
         "x": round(area.x, 1),
         "y": round(area.y, 1),
         "r": round(area.r, 1),
-        "colour": region.colour,
-        "family": region.family,
         "styles": styles[:5],
         "artists": row["artists"],
     }

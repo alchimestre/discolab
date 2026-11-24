@@ -1,4 +1,4 @@
-"""Where the taste areas sit on the map, and the genre family that tints each.
+"""Where the taste areas sit on the map.
 
 Areas are sized by how many artists they hold and placed so that areas sharing
 discoveries settle near one another.
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import random
-import re
 from dataclasses import dataclass
 
 WIDTH = 1000.0
@@ -17,161 +16,14 @@ PADDING = 16.0
 ITERATIONS = 500
 SEED = 7
 
-# Raw labels come sixty to a graph and several of them mean one thing to a
-# listener: techno, house, trance and electro are one family. Naming a cluster
-# after its top raw label spends sixty names on six ideas, so the labels are
-# folded into families first, and the family is what tints the heat. Raw labels
-# stay in the panel, where there is room for them.
-FAMILY_EXACT = {
-    "electro pop/electro rock": "Electronic",
-    "pop indé/folk": "Pop",
-    "rock indé/pop rock": "Rock",
-    "rock indé": "Rock",
-    "electro hip-hop": "Hip hop & Soul",
-    "variété internationale": "Pop",
-    "pop internationale": "Pop",
-    "chanson française": "Pop",
-    "rap français": "Hip hop & Soul",
-    "singer & songwriter": "Folk & World",
-    "soul & funk": "Hip hop & Soul",
-    "soul contemporaine": "Hip hop & Soul",
-    "musique africaine": "Folk & World",
-    "musique arabe": "Folk & World",
-    "musique indienne": "Folk & World",
-    "musique brésilienne": "Folk & World",
-    "musiques de jeux vidéo": "Soundtrack",
-    "musiques de films": "Soundtrack",
-    "films/jeux vidéo": "Soundtrack",
-    "bandes originales": "Soundtrack",
-    "bo tv": "Soundtrack",
-    "période classique": "Classical",
-    "chicago blues": "Jazz & Blues",
-    "blues électrique": "Jazz & Blues",
-    "rock & roll/rockabilly": "Rock",
-    "rock français": "Rock",
-    "hard rock": "Rock",
-    "dancehall/ragga": "Hip hop & Soul",
-    "comptines/chansons": "Pop",
-    "jeunesse": "Pop",
-    "livres audio": "Soundtrack",
-    "comédie": "Soundtrack",
-    "médiéval": "Classical",
-    "renaissance": "Classical",
-    "baroque": "Classical",
-    "opéra": "Classical",
-}
-
-# Matching is on whole words. A substring test reads "rai" inside "rain" and
-# "ost" inside "post-rock", which put field recordings in Folk & World and
-# post-rock in Soundtrack.
-_SEPARATORS = re.compile(r"[^\w&']+")
-
-
-def _phrase(text: str) -> str:
-    return " " + _SEPARATORS.sub(" ", text.casefold().strip()) + " "
-
-
-FAMILY_RULES = tuple(
-    (family, tuple(_phrase(needle) for needle in needles))
-    for family, needles in (
-        ("Hip hop & Soul", ("rap", "hip hop", "hip-hop", "hiphop", "r&b", "rnb",
-                            "soul", "funk", "grime", "drill", "trap", "boom bap",
-                            "dancehall", "ragga", "g-funk", "neo soul")),
-        ("Classical", ("classique", "classical", "baroque", "opéra", "opera",
-                       "renaissance", "médiéval", "medieval", "early music",
-                       "chamber", "orchestral", "carnatic", "hindustani")),
-        ("Soundtrack", ("films", "bandes originales", "jeux vidéo", "comédie",
-                        "livres audio", "soundtrack", "score", "video game", "ost")),
-        ("Jazz & Blues", ("jazz", "blues", "bossa", "bebop", "swing", "ragtime")),
-        # Before Pop and Electronic: "arabic pop" is a world record, not a chart
-        # one, and the specific family has to be asked first to say so.
-        ("Folk & World", ("folk", "country", "singer", "latino", "africaine",
-                          "african", "arabe", "arabic", "indienne", "brésilienne",
-                          "bollywood", "reggae", "world", "maghreb", "mashriq",
-                          "anatolia", "levant", "occitan", "sub-saharan", "sahel",
-                          "andes", "balkans", "cajun", "lament", "lullaby",
-                          "balearic", "tuareg", "gnawa", "sufi", "qawwali", "rai",
-                          "desert blues", "celtic", "greek", "flamenco",
-                          "reggaeton", "oriental", "andalusian", "morna")),
-        ("Pop", ("pop", "variété", "chanson", "jeunesse", "comptines",
-                 "singer-songwriter")),
-        ("Electronic", ("electro", "techno", "house", "dance", "trance", "disco",
-                        "dubstep", "club", "edm", "dub", "hardgroove", "acidcore",
-                        "schranz", "idm", "breakbeat", "jungle", "ambient", "ebm",
-                        "synth", "wave", "psytrance", "hardstyle", "rave", "gabber",
-                        "dnb", "drum and bass", "minimal", "chillout", "downtempo",
-                        "trip-hop", "trip hop", "industrial", "glitch", "drone",
-                        "dark ambient", "bass music", "garage")),
-        ("Rock", ("rock", "metal", "alternative", "indie", "indé", "punk",
-                  "psychedelic", "shoegaze", "grunge", "stoner", "sludge", "doom",
-                  "krautrock", "post-rock", "hardcore", "emo", "screamo",
-                  "gothic")),
-        ("Experimental", ("experimental", "avant-garde", "avant garde", "free jazz",
-                          "noise", "musique concrète", "electroacoustic")),
-    )
-)
-
-FAMILY_COLOUR = {
-    "Electronic": "#5b9bff",
-    "Hip hop & Soul": "#ff9440",
-    "Rock": "#ff6b5e",
-    "Pop": "#ff6fc4",
-    "Jazz & Blues": "#f0b429",
-    "Classical": "#b18cff",
-    "Folk & World": "#3fc47c",
-    "Soundtrack": "#3fc0d8",
-    "Experimental": "#a3a3f5",
-    "Other": "#9aa0aa",
-}
-
-
-def family_of(genre: str) -> str:
-    """Fold one raw label into a family."""
-    key = genre.casefold().strip()
-    if key in FAMILY_EXACT:
-        return FAMILY_EXACT[key]
-    words = _phrase(genre)
-    for family, needles in FAMILY_RULES:
-        if any(needle in words for needle in needles):
-            return family
-    return "Other"
-
 
 @dataclass
 class Area:
     key: int
     size: int
-    genres: tuple[tuple[str, int], ...] = ()
     x: float = 0.0
     y: float = 0.0
     r: float = 0.0
-
-    @property
-    def families(self) -> tuple[tuple[str, int], ...]:
-        """Genre families by weight, heaviest first."""
-        totals: dict[str, int] = {}
-        for name, count in self.genres:
-            family = family_of(name)
-            totals[family] = totals.get(family, 0) + count
-        return tuple(sorted(totals.items(), key=lambda item: (-item[1], item[0])))
-
-    @property
-    def family(self) -> str:
-        """The heaviest family that names a sound.
-
-        Unknown labels are counted with the rest, and on Last.fm's long tail they
-        outnumber any one genre: eight clusters were tinting grey while holding
-        hundreds of techno and house mentions between them.
-        """
-        for name, _ in self.families:
-            if name != "Other":
-                return name
-        return "Other"
-
-    @property
-    def colour(self) -> str:
-        """Tint from the area's family."""
-        return FAMILY_COLOUR.get(self.family, FAMILY_COLOUR["Other"])
 
 
 def radius_for(size: int, largest: int) -> float:

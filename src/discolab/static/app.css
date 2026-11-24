@@ -57,8 +57,6 @@ svg.map { flex: 1; min-height: 0; width: 100%; display: block; cursor: grab; tou
 .map a[aria-current] circle { fill-opacity: .6; stroke-width: 3; }
 .map text { fill: CanvasText; font-size: var(--area-label, 11px); text-anchor: middle; paint-order: stroke; stroke: Canvas; stroke-width: .25em; pointer-events: none; }
 .map text.style { font-weight: 600; }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--quiet); }
-.legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--tint); margin-right: 6px; }
 
 @media (max-width: 760px) {
   body { height: auto; }

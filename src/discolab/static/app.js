@@ -2,6 +2,8 @@ const mapPane = document.querySelector(".map-pane");
 const listPane = document.querySelector(".list-pane");
 const PAGE_SIZE = 40;
 const MAP_PADDING = 40;
+// Successive areas a golden angle apart in hue, so no two ids land close.
+const HUE_STEP = 137.508;
 const LABEL_PX = 11;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 24;
@@ -35,6 +37,9 @@ async function load() {
   }
   graph = await response.json();
   areas = new Map(graph.areas.map(area => [area.id, area]));
+  graph.areas.forEach(area => {
+    area.colour = `oklch(68% 0.16 ${(area.id * HUE_STEP) % 360})`;
+  });
   graph.discoveries.forEach((discovery, index) => {
     discovery.rank = index + 1;
   });
@@ -119,11 +124,7 @@ function mapView() {
   const right = Math.max(...graph.areas.map(area => area.x + area.r)) + MAP_PADDING;
   const bottom = Math.max(...graph.areas.map(area => area.y + area.r)) + MAP_PADDING;
   const heaviest = Math.max(1, ...graph.links.map(link => link.shared));
-  const families = new Map(graph.areas.map(area => [area.family, area.colour]));
-  const legend = [...families].map(([family, colour]) =>
-    `<span style="--tint:${colour}">${escapeHtml(family)}</span>`).join("");
-  return `<div class="legend">${legend}</div>
-    <svg class="map" viewBox="${left} ${top} ${right - left} ${bottom - top}" role="img" aria-label="Map of your taste areas">
+  return `<svg class="map" viewBox="${left} ${top} ${right - left} ${bottom - top}" role="img" aria-label="Map of your taste areas">
       ${graph.links.map(link => mapLine(link, heaviest)).join("")}
       ${graph.areas.map(mapBubble).join("")}
     </svg>`;

@@ -79,12 +79,10 @@ It reads the database on every page load, so a rerun of `guess` shows on refresh
 
 | Side | Shows |
 |---|---|
-| Left, the map | One bubble per area of at least 5 artists, sized by its artist count. Areas of one region are drawn together and share the region's genre-family tint. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
+| Left, the map | One bubble per area of at least 5 artists, sized by its artist count, each in its own colour and named by its most distinctive style. Areas of one region are drawn together. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
 | Right, the list | Every artist you do not have that two regions vote for, best first, with every area that voted and the seeds that led there |
 
 A click on a bubble, or on an area chip in the list, selects that area; a second click unselects it. One selected area narrows the list to its discoveries. Several narrow it to the artists every selected area votes for, ranked by the weakest of those votes.
-
-Sixty-odd raw Deezer labels are folded into eight families before a region is tinted. Electro, Dance, Techno/House and Trance are one family.
 
 `Listen` on a discovery searches YouTube for one official upload and embeds it. Results are kept in `videos.json` beside the database, so an artist is searched once.
 
@@ -212,9 +210,9 @@ Genres come from Last.fm's own tags, written as a property rather than as graph 
 
 It resumes: every artist asked is marked, so the next run continues where the last stopped. Tags cost one request per artist, where `expand` gets twenty, so the walk is paced at four a second and covers twelve thousand artists in about fifty minutes.
 
-**Only words that describe a sound.** Last.fm's top tags mix genres with places, platforms and moods — `netherlands`, `bandcamp`, `relaxing`. Those fold into no family, so they are dropped, by list and by the `-ese` and `-ish` endings most demonyms share. A tag also has to appear on eight listeners and hold a tenth of the artist's top tag, or it is one person's word.
+**Only words that describe a sound.** Last.fm's top tags mix genres with places, platforms and moods — `netherlands`, `bandcamp`, `relaxing`. Those are dropped, by list and by the `-ese` and `-ish` endings most demonyms share. A tag also has to appear on eight listeners and hold a tenth of the artist's top tag, or it is one person's word.
 
-Tags name a sound more precisely than a catalogue does: `hardgroove`, `acidcore`, `industrial techno`, `schranz`. They fold into eight families before the heat is tinted, because techno, house, trance and electro are one family to a listener.
+Tags name a sound more precisely than a catalogue does: `hardgroove`, `acidcore`, `industrial techno`, `schranz`.
 
 ## Known limits
 
