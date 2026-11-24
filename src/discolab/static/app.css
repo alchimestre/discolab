@@ -37,6 +37,7 @@ summary { cursor: pointer; color: var(--quiet); font-size: 13px; }
   border: 1px solid var(--tint); background: color-mix(in srgb, var(--tint) 16%, transparent);
 }
 .chip:hover { background: color-mix(in srgb, var(--tint) 32%, transparent); }
+.picked { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 /* height: auto, or the height attribute YouTube sets on its iframe overrides the ratio. */
 .player .frame { width: 100%; height: auto; aspect-ratio: 16 / 9; border: 0; border-radius: 6px; display: block; }
 

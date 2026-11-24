@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import http.server
+import itertools
 import json
 import sqlite3
 import threading
@@ -19,7 +20,6 @@ from .youtube import load_video_cache, resolve_artist, save_video_cache
 
 STATIC = Path(__file__).parent / "static"
 HOST = "127.0.0.1"
-# SQLite reads a negative LIMIT as no limit.
 EVERY = -1
 
 
@@ -36,8 +36,9 @@ def graph_payload(connection: sqlite3.Connection) -> dict:
     """Everything the pages draw: the areas, placed, and every discovery between them."""
     discoveries = query.external_candidates(connection, EVERY)
     shared = Counter(
-        tuple(sorted(vote["area"] for vote in discovery["votes"]))
+        pair
         for discovery in discoveries
+        for pair in itertools.combinations(sorted(vote["area"] for vote in discovery["votes"]), 2)
     )
     rows = query.areas(connection)
     largest = max((len(row["artists"]) for row in rows), default=1)

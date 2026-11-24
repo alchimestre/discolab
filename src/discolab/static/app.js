@@ -47,22 +47,28 @@ async function load() {
   showSelection();
 }
 
-// The selected area lives in the address, so back, reload and a chip's link all work.
-function selectedArea() {
-  const [, page, id] = location.hash.split("/");
-  return page === "area" ? areas.get(Number(id)) : undefined;
+// The selected areas live in the address, so back and reload keep them.
+function selectedAreas() {
+  const ids = location.hash.slice(2).split(",").filter(Boolean).map(Number);
+  return ids.filter(id => areas.has(id)).map(id => areas.get(id));
+}
+
+// The address that adds an unselected area, or drops a selected one.
+function toggleLink(id) {
+  const ids = selectedAreas().map(area => area.id);
+  const toggled = ids.includes(id) ? ids.filter(other => other !== id) : [...ids, id];
+  return EVERY_AREA + toggled.join(",");
 }
 
 function showSelection() {
-  const selected = selectedArea();
+  const selected = selectedAreas();
   for (const bubble of mapPane.querySelectorAll("svg.map a")) {
-    const isSelected = selected !== undefined && Number(bubble.dataset.area) === selected.id;
-    bubble.toggleAttribute("aria-current", isSelected);
-    // Clicking the selected bubble again unselects it.
-    bubble.setAttribute("href", isSelected ? EVERY_AREA : areaLink(bubble.dataset.area));
+    const id = Number(bubble.dataset.area);
+    bubble.toggleAttribute("aria-current", selected.some(area => area.id === id));
+    bubble.setAttribute("href", toggleLink(id));
   }
-  mapPane.querySelector("svg.map").classList.toggle("selecting", selected !== undefined);
-  listPane.innerHTML = selected ? areaList(selected) : everyList();
+  mapPane.querySelector("svg.map").classList.toggle("selecting", selected.length > 0);
+  listPane.innerHTML = selected.length ? selectionList(selected) : everyList();
   listPane.scrollTop = 0;
 }
 
@@ -70,22 +76,40 @@ function everyList() {
   return `<h1>Between your areas</h1>
     <p class="lede">${graph.discoveries.length} artists you do not have, each one reached from
     two separate areas of your taste. Ranked by the share of the weaker area's seeds that lead there.
-    Click a bubble to see one area.</p>
+    Click bubbles to see what they share.</p>
     ${cards(graph.discoveries)}`;
 }
 
-function areaList(area) {
-  const touching = graph.discoveries.filter(discovery =>
-    discovery.votes.some(vote => vote.area === area.id));
+function selectionList(selected) {
+  // An artist's weakest support among the selected areas; zero when one of them does not vote.
+  const weakest = discovery => Math.min(...selected.map(area =>
+    discovery.votes.find(vote => vote.area === area.id)?.support ?? 0));
+  const common = graph.discoveries.filter(discovery => weakest(discovery) > 0);
+  const several = selected.length > 1;
+  if (several) common.sort((a, b) => weakest(b) - weakest(a));
+  const heading = several
+    ? `<h1>Where ${selected.length} areas meet</h1>`
+    : `<h1 class="tinted" style="--tint:${selected[0].colour}">${escapeHtml(areaName(selected[0]))}</h1>`;
+  const count = several
+    ? `${common.length} artists every one of them leads to`
+    : `${common.length} artists shared with another area`;
+  return `${heading}
+    <p class="picked">${selected.map(areaChip).join("")}</p>
+    <p class="lede">${count} · <a href="${EVERY_AREA}">Show every area</a></p>
+    ${selected.map(memberList).join("")}
+    ${cards(common) || "<p class='quiet'>Nothing is reached from all of these at once.</p>"}`;
+}
+
+function memberList(area) {
   const members = area.artists.map(name => `<li>${escapeHtml(name)}</li>`).join("");
-  return `<h1 class="tinted" style="--tint:${area.colour}">${escapeHtml(areaName(area))}</h1>
-    <p class="lede">${touching.length} artists shared with another area ·
-    ${escapeHtml(area.styles.join(" · "))} · <a href="${EVERY_AREA}">Show every area</a></p>
-    <details>
-      <summary>${area.artists.length} of your artists here, most played first</summary>
-      <ul class="members">${members}</ul>
-    </details>
-    ${cards(touching) || "<p class='quiet'>No other area leads to the same artists yet.</p>"}`;
+  return `<details>
+    <summary>${area.artists.length} of your artists in ${escapeHtml(areaName(area))}</summary>
+    <ul class="members">${members}</ul>
+  </details>`;
+}
+
+function areaChip(area) {
+  return `<a class="chip" style="--tint:${area.colour}" href="${toggleLink(area.id)}">${escapeHtml(areaName(area))}</a>`;
 }
 
 function mapView() {
@@ -112,16 +136,12 @@ function mapLine(link, heaviest) {
 }
 
 function mapBubble(area) {
-  return `<a href="${areaLink(area.id)}" data-area="${area.id}" style="--tint:${area.colour}">
+  return `<a data-area="${area.id}" style="--tint:${area.colour}">
     <circle cx="${area.x}" cy="${area.y}" r="${area.r}"/>
     <text class="style" x="${area.x}" y="${area.y}" dy="-0.2em">${escapeHtml(area.styles[0] || "")}</text>
     <text x="${area.x}" y="${area.y}" dy="1em">${escapeHtml(area.artists[0])}</text>
     <title>${area.artists.length} artists · ${escapeHtml(area.artists.slice(0, 5).join(", "))}</title>
   </a>`;
-}
-
-function areaLink(id) {
-  return `#/area/${id}`;
 }
 
 function panAndZoom(svg) {
@@ -222,7 +242,7 @@ function card(discovery) {
 
 function voteLine(vote) {
   const area = areas.get(vote.area);
-  return `<li><a class="chip" style="--tint:${area.colour}" href="${areaLink(area.id)}">${escapeHtml(areaName(area))}</a>
+  return `<li>${areaChip(area)}
     <span class="quiet">${Math.round(vote.support * 100)}% of its seeds · via ${escapeHtml(vote.seeds.join(", "))}</span></li>`;
 }
 

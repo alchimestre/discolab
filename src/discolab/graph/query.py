@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
 
@@ -256,34 +257,42 @@ def external_candidates(
                        sum(votes) OVER (PARTITION BY key) AS seed_count
                 FROM vote
             )
-            SELECT e.key, e.name, e.url, e.styles, weaker.seed_count, weaker.areas,
-                   weaker.support AS balance, stronger.support AS stronger_support,
-                   stronger.area AS stronger_area, weaker.area AS weaker_area
-            FROM ranked weaker
-            JOIN ranked stronger ON stronger.key = weaker.key AND stronger.position = 1
-            JOIN artist e ON e.key = weaker.key
-            WHERE weaker.position = 2 AND weaker.areas >= :min_areas
-            ORDER BY balance DESC, weaker.seed_count DESC, e.key
-            LIMIT :limit
+            SELECT e.key, e.name, e.url, e.styles, vote.seed_count, vote.areas,
+                   weaker.support AS balance, vote.area, vote.support
+            FROM ranked vote
+            JOIN ranked weaker ON weaker.key = vote.key AND weaker.position = 2
+            JOIN artist e ON e.key = vote.key
+            WHERE vote.areas >= :min_areas
+            ORDER BY balance DESC, vote.seed_count DESC, e.key, vote.position
             """,
-            {"min_areas": max(2, min_areas), "min_area_seeds": min_area_seeds, "limit": limit},
+            {"min_areas": max(2, min_areas), "min_area_seeds": min_area_seeds},
         )
     )
-    for row in rows:
-        row["styles"] = json.loads(row["styles"])
-        best_two = (
-            (row.pop("stronger_area"), row.pop("stronger_support")),
-            (row.pop("weaker_area"), row["balance"]),
-        )
-        row["votes"] = [
+    by_artist = itertools.groupby(rows, key=lambda row: row["key"])
+    wanted = itertools.islice(by_artist, limit if limit >= 0 else None)
+    return [_candidate(connection, list(votes)) for _, votes in wanted]
+
+
+def _candidate(connection: sqlite3.Connection, votes: list[dict]) -> dict:
+    """One artist with every area that votes for it, strongest first."""
+    artist = votes[0]
+    return {
+        "key": artist["key"],
+        "name": artist["name"],
+        "url": artist["url"],
+        "styles": json.loads(artist["styles"]),
+        "seed_count": artist["seed_count"],
+        "areas": artist["areas"],
+        "balance": artist["balance"],
+        "votes": [
             {
-                "area": area,
-                "support": support,
-                "seeds": _area_seed_names(connection, row["key"], area),
+                "area": vote["area"],
+                "support": vote["support"],
+                "seeds": _area_seed_names(connection, artist["key"], vote["area"]),
             }
-            for area, support in best_two
-        ]
-    return rows
+            for vote in votes
+        ],
+    }
 
 
 def _area_seed_names(
