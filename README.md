@@ -77,11 +77,12 @@ uv run discolab serve
 
 It reads the database on every page load, so a rerun of `guess` shows on refresh. `--port N` moves it, `--no-open` leaves the browser alone. It binds to localhost only.
 
-| Page | Shows |
+| Side | Shows |
 |---|---|
-| Discoveries | Every artist you do not have that two areas vote for, best first, with the two areas and the seeds that led there |
-| Map | One bubble per area of at least 5 artists, sized by its artist count and tinted by genre family. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
-| An area | Its discoveries, and its own artists most played first. Reached from a bubble or from an area chip on a discovery |
+| Left, the map | One bubble per area of at least 5 artists, sized by its artist count and tinted by genre family. A line joins two areas that share discoveries, thicker when they share more. The wheel zooms, a drag pans, a double-click resets |
+| Right, the list | Every artist you do not have that two areas vote for, best first, with the two areas and the seeds that led there |
+
+A click on a bubble, or on an area chip in the list, narrows the list to that area and adds its own artists, most played first. A second click on the bubble shows every area again.
 
 Sixty-odd raw Deezer labels are folded into eight families before an area is tinted. Electro, Dance, Techno/House and Trance are one family.
 

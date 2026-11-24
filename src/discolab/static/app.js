@@ -1,4 +1,5 @@
-const main = document.querySelector("main");
+const mapPane = document.querySelector(".map-pane");
+const listPane = document.querySelector(".list-pane");
 const PAGE_SIZE = 40;
 const MAP_PADDING = 40;
 const LABEL_PX = 11;
@@ -6,6 +7,7 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 24;
 const WHEEL_RATE = 0.0016;
 const DRAG_THRESHOLD_PX = 4;
+const EVERY_AREA = "#/";
 
 let graph;
 let areas;
@@ -17,8 +19,8 @@ const youtubeReady = new Promise(resolve => {
 });
 
 load();
-window.addEventListener("hashchange", render);
-main.addEventListener("click", event => {
+window.addEventListener("hashchange", showSelection);
+listPane.addEventListener("click", event => {
   const listen = event.target.closest(".listen");
   if (listen) play(listen.closest(".card"));
   const more = event.target.closest(".more");
@@ -28,7 +30,7 @@ main.addEventListener("click", event => {
 async function load() {
   const response = await fetch("/api/graph");
   if (!response.ok) {
-    main.textContent = `The database could not be read (${response.status}).`;
+    listPane.textContent = `The database could not be read (${response.status}).`;
     return;
   }
   graph = await response.json();
@@ -36,47 +38,54 @@ async function load() {
   graph.discoveries.forEach((discovery, index) => {
     discovery.rank = index + 1;
   });
-  render();
-}
-
-function render() {
-  if (!graph) return;
-  const [, page = "", id] = location.hash.split("/");
-  for (const link of document.querySelectorAll("nav a")) {
-    link.toggleAttribute("aria-current", link.dataset.page === page);
-  }
   if (!graph.areas.length) {
-    main.innerHTML = "<h1>Nothing to show yet</h1><p class='lede'>Run <code>discolab ingest</code>, then <code>discolab guess</code>.</p>";
-  } else if (page === "map") {
-    main.innerHTML = mapView();
-    panAndZoom(main.querySelector("svg.map"));
-  } else if (page === "area") {
-    main.innerHTML = areaView(Number(id));
-  } else {
-    main.innerHTML = discoveriesView();
+    listPane.innerHTML = "<h1>Nothing to show yet</h1><p class='lede'>Run <code>discolab ingest</code>, then <code>discolab guess</code>.</p>";
+    return;
   }
-  window.scrollTo(0, 0);
+  mapPane.innerHTML = mapView();
+  panAndZoom(mapPane.querySelector("svg.map"));
+  showSelection();
 }
 
-function discoveriesView() {
+// The selected area lives in the address, so back, reload and a chip's link all work.
+function selectedArea() {
+  const [, page, id] = location.hash.split("/");
+  return page === "area" ? areas.get(Number(id)) : undefined;
+}
+
+function showSelection() {
+  const selected = selectedArea();
+  for (const bubble of mapPane.querySelectorAll("svg.map a")) {
+    const isSelected = selected !== undefined && Number(bubble.dataset.area) === selected.id;
+    bubble.toggleAttribute("aria-current", isSelected);
+    // Clicking the selected bubble again unselects it.
+    bubble.setAttribute("href", isSelected ? EVERY_AREA : areaLink(bubble.dataset.area));
+  }
+  mapPane.querySelector("svg.map").classList.toggle("selecting", selected !== undefined);
+  listPane.innerHTML = selected ? areaList(selected) : everyList();
+  listPane.scrollTop = 0;
+}
+
+function everyList() {
   return `<h1>Between your areas</h1>
     <p class="lede">${graph.discoveries.length} artists you do not have, each one reached from
-    two separate areas of your taste. Ranked by the share of the weaker area's seeds that lead there.</p>
+    two separate areas of your taste. Ranked by the share of the weaker area's seeds that lead there.
+    Click a bubble to see one area.</p>
     ${cards(graph.discoveries)}`;
 }
 
-function areaView(id) {
-  const area = areas.get(id);
-  if (!area) return "<h1>No such area</h1>";
+function areaList(area) {
   const touching = graph.discoveries.filter(discovery =>
-    discovery.votes.some(vote => vote.area === id));
+    discovery.votes.some(vote => vote.area === area.id));
   const members = area.artists.map(name => `<li>${escapeHtml(name)}</li>`).join("");
   return `<h1 class="tinted" style="--tint:${area.colour}">${escapeHtml(areaName(area))}</h1>
-    <p class="lede">${area.artists.length} of your artists · ${escapeHtml(area.styles.join(" · "))}</p>
-    <h3>Shared with another area · ${touching.length}</h3>
-    ${cards(touching) || "<p class='quiet'>No other area leads to the same artists yet.</p>"}
-    <h3>Your artists here, most played first</h3>
-    <ul class="members">${members}</ul>`;
+    <p class="lede">${touching.length} artists shared with another area ·
+    ${escapeHtml(area.styles.join(" · "))} · <a href="${EVERY_AREA}">Show every area</a></p>
+    <details>
+      <summary>${area.artists.length} of your artists here, most played first</summary>
+      <ul class="members">${members}</ul>
+    </details>
+    ${cards(touching) || "<p class='quiet'>No other area leads to the same artists yet.</p>"}`;
 }
 
 function mapView() {
@@ -88,10 +97,7 @@ function mapView() {
   const families = new Map(graph.areas.map(area => [area.family, area.colour]));
   const legend = [...families].map(([family, colour]) =>
     `<span style="--tint:${colour}">${escapeHtml(family)}</span>`).join("");
-  return `<h1>Your areas</h1>
-    <p class="lede">A bubble is a group of your artists that listeners tie together, sized by how many
-    it holds. A line joins two areas that lead to the same new artists, thicker when they share more.</p>
-    <div class="legend">${legend}</div>
+  return `<div class="legend">${legend}</div>
     <svg class="map" viewBox="${left} ${top} ${right - left} ${bottom - top}" role="img" aria-label="Map of your taste areas">
       ${graph.links.map(link => mapLine(link, heaviest)).join("")}
       ${graph.areas.map(mapBubble).join("")}
@@ -106,12 +112,16 @@ function mapLine(link, heaviest) {
 }
 
 function mapBubble(area) {
-  return `<a href="#/area/${area.id}" style="--tint:${area.colour}">
+  return `<a href="${areaLink(area.id)}" data-area="${area.id}" style="--tint:${area.colour}">
     <circle cx="${area.x}" cy="${area.y}" r="${area.r}"/>
     <text class="style" x="${area.x}" y="${area.y}" dy="-0.2em">${escapeHtml(area.styles[0] || "")}</text>
     <text x="${area.x}" y="${area.y}" dy="1em">${escapeHtml(area.artists[0])}</text>
     <title>${area.artists.length} artists · ${escapeHtml(area.artists.slice(0, 5).join(", "))}</title>
   </a>`;
+}
+
+function areaLink(id) {
+  return `#/area/${id}`;
 }
 
 function panAndZoom(svg) {
@@ -170,11 +180,13 @@ function panAndZoom(svg) {
   });
   svg.addEventListener("pointerup", () => { drag = null; });
   svg.addEventListener("pointercancel", () => { drag = null; });
-  // A drag that ends over a bubble must not open its area.
+  // A drag that ends over a bubble must not select its area.
   svg.addEventListener("click", event => {
     if (dragged) event.preventDefault();
   }, true);
-  svg.addEventListener("dblclick", () => {
+  // Resets only from the empty map: a second click on a bubble is an unselect.
+  svg.addEventListener("dblclick", event => {
+    if (event.target.closest("a")) return;
     Object.assign(view, rest);
     apply();
   });
@@ -201,18 +213,16 @@ function card(discovery) {
     ? discovery.url
     : `https://www.last.fm/music/${encodeURIComponent(discovery.name)}`;
   return `<article class="card" data-name="${escapeHtml(discovery.name)}">
-    <div>
-      <h2><span class="rank">${discovery.rank}</span><a href="${escapeHtml(page)}" target="_blank" rel="noopener">${escapeHtml(discovery.name)}</a></h2>
-      <p class="quiet">${escapeHtml(discovery.styles.slice(0, 4).join(" · "))}</p>
-      <ul class="votes">${discovery.votes.map(voteLine).join("")}</ul>
-    </div>
+    <h2><span class="rank">${discovery.rank}</span><a href="${escapeHtml(page)}" target="_blank" rel="noopener">${escapeHtml(discovery.name)}</a></h2>
+    <p class="quiet">${escapeHtml(discovery.styles.slice(0, 4).join(" · "))}</p>
+    <ul class="votes">${discovery.votes.map(voteLine).join("")}</ul>
     <div class="player"><button type="button" class="listen">▶ Listen</button></div>
   </article>`;
 }
 
 function voteLine(vote) {
   const area = areas.get(vote.area);
-  return `<li><a class="chip" style="--tint:${area.colour}" href="#/area/${area.id}">${escapeHtml(areaName(area))}</a>
+  return `<li><a class="chip" style="--tint:${area.colour}" href="${areaLink(area.id)}">${escapeHtml(areaName(area))}</a>
     <span class="quiet">${Math.round(vote.support * 100)}% of its seeds · via ${escapeHtml(vote.seeds.join(", "))}</span></li>`;
 }
 
