@@ -93,7 +93,11 @@ def test_two_areas_of_one_region_do_not_count_as_separate_tastes(tmp_path) -> No
 
 def test_a_style_spelled_two_ways_counts_each_artist_once(tmp_path) -> None:
     settings = Settings(library_roots=(), database_path=tmp_path / "graph.db")
-    spellings = {"surgeon": '["Jazz", "jazz"]', "regis": '["jazz"]', "female": '["Jazz"]'}
+    spellings = {
+        "surgeon": '["Jazz", "jazz", "Électro"]',
+        "regis": '["jazz", "électro"]',
+        "female": '["Jazz"]',
+    }
 
     with store.connect(settings) as connection:
         load.load_catalog(connection, _catalog(TECHNO))
@@ -103,4 +107,4 @@ def test_a_style_spelled_two_ways_counts_each_artist_once(tmp_path) -> None:
             )
         [area] = query.areas(connection, min_size=1)
 
-    assert area["styles"] == [("Jazz", 3)]
+    assert area["styles"] == [("Jazz", 3), ("Électro", 2)]

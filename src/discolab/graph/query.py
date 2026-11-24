@@ -188,12 +188,14 @@ def areas(connection: sqlite3.Connection, min_size: int = MIN_AREA_SIZE) -> list
         )
         entry["artists"].append(row["name"])
 
+    # SQLite's lower() folds ASCII only; the app compares styles with str.casefold.
+    connection.create_function("casefold", 1, str.casefold, deterministic=True)
     for row in connection.execute(
         """
         SELECT a.area, min(style.value) AS style, count(DISTINCT a.key) AS n
         FROM artist a, json_each(a.styles) AS style
         WHERE a.area >= 0
-        GROUP BY a.area, lower(style.value)
+        GROUP BY a.area, casefold(style.value)
         ORDER BY n DESC, style
         """
     ):
