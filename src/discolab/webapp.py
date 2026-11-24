@@ -123,9 +123,13 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    # Without this a browser pairs a new index.html with the app.js it cached.
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     # Only successful requests are silenced; errors still reach the terminal.
     def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
